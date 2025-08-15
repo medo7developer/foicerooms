@@ -5,7 +5,7 @@ import '../providers/game_provider.dart';
 class SupabaseService {
   final SupabaseClient _client = Supabase.instance.client;
 
-  // إنشاء غرفة جديدة
+  // إنشاء غرفة جديدة مع التحقق من الحالة الحالية
   Future<String?> createRoom({
     required String name,
     required String creatorId,
@@ -14,8 +14,24 @@ class SupabaseService {
     required int roundDuration,
   }) async {
     try {
+      // التحقق من وجود المستخدم في غرفة أخرى أولاً
+      final existingPlayer = await _client
+          .from('players')
+          .select('room_id, rooms!inner(state)')
+          .eq('id', creatorId)
+          .maybeSingle();
+
+      if (existingPlayer != null) {
+        final roomState = existingPlayer['rooms']['state'];
+        if (roomState == 'waiting' || roomState == 'playing' || roomState == 'voting') {
+          log('المستخدم موجود بالفعل في غرفة نشطة');
+          return null; // المستخدم في غرفة نشطة
+        }
+      }
+
       final roomId = DateTime.now().millisecondsSinceEpoch.toString();
 
+      // إنشاء الغرفة
       await _client.from('rooms').insert({
         'id': roomId,
         'name': name,
@@ -23,9 +39,22 @@ class SupabaseService {
         'max_players': maxPlayers,
         'total_rounds': totalRounds,
         'round_duration': roundDuration,
+        'state': 'waiting',
+        'created_at': DateTime.now().toIso8601String(),
       });
 
-      log('تم إنشاء الغرفة: $roomId');
+      // إضافة المنشئ كلاعب في الغرفة
+      await _client.from('players').insert({
+        'id': creatorId,
+        'name': 'منشئ الغرفة', // سيتم تحديثه لاحقاً
+        'room_id': roomId,
+        'is_connected': true,
+        'is_voted': false,
+        'votes': 0,
+        'role': 'normal',
+      });
+
+      log('تم إنشاء الغرفة: $roomId بواسطة $creatorId');
       return roomId;
     } catch (e) {
       log('خطأ في إنشاء الغرفة: $e');
@@ -33,42 +62,47 @@ class SupabaseService {
     }
   }
 
-  // الحصول على الغرف المتاحة (جميع الغرف، ليس فقط المنتظرة)
+  // الحصول على الغرف المتاحة مع فلترة أفضل
   Future<List<GameRoom>> getAvailableRooms() async {
     try {
       final response = await _client
           .from('rooms')
           .select('*, players(*)')
-          .inFilter('state', ['waiting', 'playing']) // تضمين الغرف الجارية أيضاً
+          .inFilter('state', ['waiting', 'playing', 'voting'])
           .order('created_at', ascending: false);
 
       final List<GameRoom> rooms = [];
 
       for (final roomData in response) {
-        final players = (roomData['players'] as List? ?? [])
-            .map((p) => Player(
-          id: p['id'],
-          name: p['name'],
-          isConnected: p['is_connected'] ?? false,
-          isVoted: p['is_voted'] ?? false,
-          votes: p['votes'] ?? 0,
-          role: p['role'] == 'spy' ? PlayerRole.spy : PlayerRole.normal,
-        ))
-            .toList();
+        try {
+          final players = (roomData['players'] as List? ?? [])
+              .map((p) => Player(
+            id: p['id'] ?? '',
+            name: p['name'] ?? 'لاعب',
+            isConnected: p['is_connected'] ?? false,
+            isVoted: p['is_voted'] ?? false,
+            votes: p['votes'] ?? 0,
+            role: (p['role'] == 'spy') ? PlayerRole.spy : PlayerRole.normal,
+          ))
+              .toList();
 
-        rooms.add(GameRoom(
-          id: roomData['id'],
-          name: roomData['name'],
-          creatorId: roomData['creator_id'],
-          maxPlayers: roomData['max_players'],
-          totalRounds: roomData['total_rounds'],
-          roundDuration: roomData['round_duration'],
-          players: players,
-          state: _parseGameState(roomData['state']),
-          currentRound: roomData['current_round'] ?? 0,
-          currentWord: roomData['current_word'],
-          spyId: roomData['spy_id'],
-        ));
+          rooms.add(GameRoom(
+            id: roomData['id'] ?? '',
+            name: roomData['name'] ?? 'غرفة بدون اسم',
+            creatorId: roomData['creator_id'] ?? '',
+            maxPlayers: roomData['max_players'] ?? 4,
+            totalRounds: roomData['total_rounds'] ?? 3,
+            roundDuration: roomData['round_duration'] ?? 300,
+            players: players,
+            state: _parseGameState(roomData['state']),
+            currentRound: roomData['current_round'] ?? 0,
+            currentWord: roomData['current_word'],
+            spyId: roomData['spy_id'],
+          ));
+        } catch (e) {
+          log('خطأ في معالجة غرفة: $e');
+          continue; // تخطي الغرفة المعطوبة
+        }
       }
 
       log('تم جلب ${rooms.length} غرفة من قاعدة البيانات');
@@ -79,58 +113,119 @@ class SupabaseService {
     }
   }
 
-  // الانضمام لغرفة مع حماية من التعارض
-  Future<bool> joinRoom(String roomId, String playerId, String playerName) async {
+  // التحقق من حالة المستخدم الحالية
+  Future<UserStatus> checkUserStatus(String playerId) async {
     try {
-      // التحقق من عدد اللاعبين أولاً
-      final roomResponse = await _client
-          .from('rooms')
-          .select('max_players, players(*)')
-          .eq('id', roomId)
-          .single();
+      final playerData = await _client
+          .from('players')
+          .select('room_id, rooms!inner(id, name, state, creator_id)')
+          .eq('id', playerId)
+          .maybeSingle();
 
-      final currentPlayers = (roomResponse['players'] as List? ?? []).length;
-      if (currentPlayers >= roomResponse['max_players']) {
-        log('الغرفة ممتلئة: $currentPlayers/${roomResponse['max_players']}');
-        return false;
+      if (playerData == null) {
+        return UserStatus.free;
       }
 
-      // التحقق من وجود اللاعب مسبقاً في الغرفة
-      final existingPlayer = await _client
+      final roomState = playerData['rooms']['state'];
+      final roomId = playerData['rooms']['id'];
+      final creatorId = playerData['rooms']['creator_id'];
+
+      if (roomState == 'finished') {
+        // تنظيف الغرف المنتهية
+        await _cleanupFinishedRoom(roomId);
+        return UserStatus.free;
+      }
+
+      if (roomState == 'waiting' || roomState == 'playing' || roomState == 'voting') {
+        return UserStatus(
+          inRoom: true,
+          roomId: roomId,
+          roomName: playerData['rooms']['name'],
+          isOwner: creatorId == playerId,
+          roomState: roomState,
+        );
+      }
+
+      return UserStatus.free;
+    } catch (e) {
+      log('خطأ في التحقق من حالة المستخدم: $e');
+      return UserStatus.free;
+    }
+  }
+
+  // الانضمام لغرفة مع حماية محسنة
+  Future<JoinResult> joinRoom(String roomId, String playerId, String playerName) async {
+    try {
+      // التحقق من حالة المستخدم أولاً
+      final userStatus = await checkUserStatus(playerId);
+      if (userStatus.inRoom) {
+        log('المستخدم موجود بالفعل في غرفة: ${userStatus.roomId}');
+        return JoinResult(
+          success: false,
+          reason: 'أنت موجود بالفعل في غرفة "${userStatus.roomName}"',
+          existingRoomId: userStatus.roomId,
+        );
+      }
+
+      // التحقق من حالة الغرفة وعدد اللاعبين
+      final roomData = await _client
+          .from('rooms')
+          .select('id, max_players, state, players(*)')
+          .eq('id', roomId)
+          .maybeSingle();
+
+      if (roomData == null) {
+        return JoinResult(success: false, reason: 'الغرفة غير موجودة');
+      }
+
+      final roomState = roomData['state'];
+      if (roomState != 'waiting') {
+        return JoinResult(success: false, reason: 'الغرفة غير متاحة للانضمام');
+      }
+
+      final currentPlayers = (roomData['players'] as List? ?? []).length;
+      final maxPlayers = roomData['max_players'] ?? 4;
+
+      if (currentPlayers >= maxPlayers) {
+        return JoinResult(success: false, reason: 'الغرفة ممتلئة');
+      }
+
+      // التحقق من عدم وجود اللاعب مسبقاً في هذه الغرفة
+      final existingInRoom = await _client
           .from('players')
           .select('id')
           .eq('id', playerId)
           .eq('room_id', roomId)
           .maybeSingle();
 
-      if (existingPlayer != null) {
-        // اللاعب موجود بالفعل، تحديث حالة الاتصال
+      if (existingInRoom != null) {
+        // تحديث حالة الاتصال فقط
         await _client.from('players').update({
           'is_connected': true,
-          'name': playerName, // تحديث الاسم في حالة تغييره
+          'name': playerName,
         }).eq('id', playerId).eq('room_id', roomId);
 
         log('تم تحديث حالة اللاعب $playerName في الغرفة $roomId');
-        return true;
+        return JoinResult(success: true, reason: 'تم الانضمام بنجاح');
       }
 
-      // التحقق من وجود اللاعب في غرف أخرى وإزالته
-      await _client.from('players').delete().eq('id', playerId);
-
-      // إضافة اللاعب للغرفة الجديدة
+      // إضافة اللاعب للغرفة
       await _client.from('players').insert({
         'id': playerId,
         'name': playerName,
         'room_id': roomId,
         'is_connected': true,
+        'is_voted': false,
+        'votes': 0,
+        'role': 'normal',
       });
 
       log('انضم اللاعب $playerName للغرفة $roomId');
-      return true;
+      return JoinResult(success: true, reason: 'تم الانضمام بنجاح');
+
     } catch (e) {
       log('خطأ في الانضمام للغرفة: $e');
 
-      // في حالة خطأ التعارض، محاولة تحديث اللاعب الموجود
       if (e.toString().contains('duplicate key')) {
         try {
           await _client.from('players').update({
@@ -142,14 +237,24 @@ class SupabaseService {
             'role': 'normal',
           }).eq('id', playerId);
 
-          log('تم حل تعارض المفتاح وتحديث اللاعب');
-          return true;
+          return JoinResult(success: true, reason: 'تم الانضمام بنجاح');
         } catch (updateError) {
           log('فشل في حل التعارض: $updateError');
         }
       }
 
-      return false;
+      return JoinResult(success: false, reason: 'خطأ في الاتصال، حاول مرة أخرى');
+    }
+  }
+
+  // تنظيف الغرف المنتهية
+  Future<void> _cleanupFinishedRoom(String roomId) async {
+    try {
+      await _client.from('players').delete().eq('room_id', roomId);
+      await _client.from('rooms').delete().eq('id', roomId);
+      log('تم تنظيف الغرفة المنتهية: $roomId');
+    } catch (e) {
+      log('خطأ في تنظيف الغرفة: $e');
     }
   }
 
@@ -183,11 +288,13 @@ class SupabaseService {
           .from('players')
           .select('votes')
           .eq('id', targetId)
-          .single();
+          .maybeSingle();
 
-      await _client.from('players').update({
-        'votes': (currentVotes['votes'] ?? 0) + 1,
-      }).eq('id', targetId);
+      if (currentVotes != null) {
+        await _client.from('players').update({
+          'votes': (currentVotes['votes'] ?? 0) + 1,
+        }).eq('id', targetId);
+      }
 
       log('تم تسجيل صوت من $playerId لـ $targetId');
     } catch (e) {
@@ -210,6 +317,7 @@ class SupabaseService {
         'to_peer': toPeer,
         'type': type,
         'data': data,
+        'created_at': DateTime.now().toIso8601String(),
       });
 
       log('تم إرسال إشارة $type من $fromPeer إلى $toPeer');
@@ -224,7 +332,7 @@ class SupabaseService {
         .from('signaling')
         .stream(primaryKey: ['id'])
         .eq('to_peer', peerId)
-        .map((List<Map<String, dynamic>> data) => data.last);
+        .map((List<Map<String, dynamic>> data) => data.isNotEmpty ? data.last : {});
   }
 
   // الاستماع لتحديثات الغرفة
@@ -233,7 +341,7 @@ class SupabaseService {
         .from('rooms')
         .stream(primaryKey: ['id'])
         .eq('id', roomId)
-        .map((List<Map<String, dynamic>> data) => data.first);
+        .map((List<Map<String, dynamic>> data) => data.isNotEmpty ? data.first : {});
   }
 
   // الاستماع لتحديثات اللاعبين
@@ -247,7 +355,27 @@ class SupabaseService {
   // مغادرة الغرفة
   Future<void> leaveRoom(String playerId) async {
     try {
-      await _client.from('players').delete().eq('id', playerId);
+      // الحصول على معلومات الغرفة قبل المغادرة
+      final playerData = await _client
+          .from('players')
+          .select('room_id, rooms!inner(creator_id)')
+          .eq('id', playerId)
+          .maybeSingle();
+
+      if (playerData != null) {
+        final roomId = playerData['room_id'];
+        final creatorId = playerData['rooms']['creator_id'];
+
+        // حذف اللاعب
+        await _client.from('players').delete().eq('id', playerId);
+
+        // إذا كان منشئ الغرفة، احذف الغرفة كاملة
+        if (creatorId == playerId) {
+          await _client.from('rooms').delete().eq('id', roomId);
+          log('تم حذف الغرفة $roomId لأن المنشئ غادر');
+        }
+      }
+
       log('غادر اللاعب $playerId الغرفة');
     } catch (e) {
       log('خطأ في مغادرة الغرفة: $e');
@@ -264,8 +392,21 @@ class SupabaseService {
   }
 
   // حذف غرفة (للمالك فقط)
-  Future<bool> deleteRoom(String roomId) async {
+  Future<bool> deleteRoom(String roomId, String userId) async {
     try {
+      // التحقق من أن المستخدم هو مالك الغرفة
+      final room = await _client
+          .from('rooms')
+          .select('creator_id')
+          .eq('id', roomId)
+          .maybeSingle();
+
+      if (room == null || room['creator_id'] != userId) {
+        log('المستخدم غير مخول لحذف هذه الغرفة');
+        return false;
+      }
+
+      // حذف الغرفة (سيتم حذف اللاعبين تلقائياً بسبب cascade)
       await _client.from('rooms').delete().eq('id', roomId);
       log('تم حذف الغرفة: $roomId');
       return true;
@@ -275,33 +416,38 @@ class SupabaseService {
     }
   }
 
-  // الحصول على معلومات الغرفة
+  // الحصول على معلومات الغرفة بأمان
   Future<GameRoom?> getRoomById(String roomId) async {
     try {
       final response = await _client
           .from('rooms')
           .select('*, players(*)')
           .eq('id', roomId)
-          .single();
+          .maybeSingle();
+
+      if (response == null) {
+        log('الغرفة $roomId غير موجودة');
+        return null;
+      }
 
       final players = (response['players'] as List? ?? [])
           .map((p) => Player(
-        id: p['id'],
-        name: p['name'],
+        id: p['id'] ?? '',
+        name: p['name'] ?? 'لاعب',
         isConnected: p['is_connected'] ?? false,
         isVoted: p['is_voted'] ?? false,
         votes: p['votes'] ?? 0,
-        role: p['role'] == 'spy' ? PlayerRole.spy : PlayerRole.normal,
+        role: (p['role'] == 'spy') ? PlayerRole.spy : PlayerRole.normal,
       ))
           .toList();
 
       return GameRoom(
-        id: response['id'],
-        name: response['name'],
-        creatorId: response['creator_id'],
-        maxPlayers: response['max_players'],
-        totalRounds: response['total_rounds'],
-        roundDuration: response['round_duration'],
+        id: response['id'] ?? '',
+        name: response['name'] ?? 'غرفة',
+        creatorId: response['creator_id'] ?? '',
+        maxPlayers: response['max_players'] ?? 4,
+        totalRounds: response['total_rounds'] ?? 3,
+        roundDuration: response['round_duration'] ?? 300,
         players: players,
         state: _parseGameState(response['state']),
         currentRound: response['current_round'] ?? 0,
@@ -314,7 +460,7 @@ class SupabaseService {
     }
   }
 
-  GameState _parseGameState(String state) {
+  GameState _parseGameState(String? state) {
     switch (state) {
       case 'waiting':
         return GameState.waiting;
@@ -328,4 +474,35 @@ class SupabaseService {
         return GameState.waiting;
     }
   }
+}
+
+// كلاسات مساعدة لإدارة حالة المستخدم
+class UserStatus {
+  final bool inRoom;
+  final String? roomId;
+  final String? roomName;
+  final bool isOwner;
+  final String? roomState;
+
+  UserStatus({
+    this.inRoom = false,
+    this.roomId,
+    this.roomName,
+    this.isOwner = false,
+    this.roomState,
+  });
+
+  static UserStatus get free => UserStatus();
+}
+
+class JoinResult {
+  final bool success;
+  final String reason;
+  final String? existingRoomId;
+
+  JoinResult({
+    required this.success,
+    required this.reason,
+    this.existingRoomId,
+  });
 }

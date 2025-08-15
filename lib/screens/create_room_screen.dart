@@ -25,11 +25,16 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   int _roundDuration = 300; // 5 دقائق
   bool _isCreating = false;
 
+  @override
+  void initState() {
+    super.initState();
+    // إعطاء اسم افتراضي للغرفة
+    _roomNameController.text = 'غرفة ${widget.playerName}';
+  }
+
   Future<void> _createRoom() async {
     if (_roomNameController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('يرجى إدخال اسم الغرفة')),
-      );
+      _showSnackBar('يرجى إدخال اسم الغرفة', isError: true);
       return;
     }
 
@@ -39,7 +44,15 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
       final supabaseService = context.read<SupabaseService>();
       final gameProvider = context.read<GameProvider>();
 
-      // إنشاء الغرفة في قاعدة البيانات
+      // التحقق من حالة المستخدم قبل الإنشاء
+      final userStatus = await supabaseService.checkUserStatus(widget.playerId);
+      if (userStatus.inRoom) {
+        setState(() => _isCreating = false);
+        _showSnackBar('أنت موجود بالفعل في غرفة "${userStatus.roomName}"', isError: true);
+        return;
+      }
+
+      // إنشاء الغرفة في قاعدة البيانات أولاً
       final roomId = await supabaseService.createRoom(
         name: _roomNameController.text.trim(),
         creatorId: widget.playerId,
@@ -48,39 +61,61 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
         roundDuration: _roundDuration,
       );
 
-      if (roomId != null) {
-        // إنشاء الغرفة في GameProvider
-        gameProvider.createRoom(
-          name: _roomNameController.text.trim(),
-          creatorId: widget.playerId,
-          maxPlayers: _maxPlayers,
-          totalRounds: _totalRounds,
-          roundDuration: _roundDuration,
-        );
-
-        // الانضمام للغرفة كمنشئ
-        await supabaseService.joinRoom(roomId, widget.playerId, widget.playerName);
-        gameProvider.joinRoom(roomId, widget.playerId, widget.playerName);
-
-        // الانتقال لشاشة اللعبة
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => GameScreen(playerId: widget.playerId),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('فشل في إنشاء الغرفة')),
-        );
+      if (roomId == null) {
+        setState(() => _isCreating = false);
+        _showSnackBar('فشل في إنشاء الغرفة، تأكد من عدم وجودك في غرفة أخرى', isError: true);
+        return;
       }
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('خطأ: $e')),
+
+      // إنشاء الغرفة في GameProvider
+      final room = gameProvider.createRoom(
+        name: _roomNameController.text.trim(),
+        creatorId: widget.playerId,
+        creatorName: widget.playerName,
+        maxPlayers: _maxPlayers,
+        totalRounds: _totalRounds,
+        roundDuration: _roundDuration,
       );
-    } finally {
+
+      // عرض رسالة نجاح
+      _showSnackBar('تم إنشاء الغرفة بنجاح!');
+
+      // الانتقال لشاشة اللعبة
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(
+          builder: (context) => GameScreen(playerId: widget.playerId),
+        ),
+      );
+
+    } catch (e) {
       setState(() => _isCreating = false);
+      debugPrint('خطأ في إنشاء الغرفة: $e');
+      _showSnackBar('حدث خطأ أثناء إنشاء الغرفة، يرجى المحاولة مرة أخرى', isError: true);
     }
+  }
+
+  void _showSnackBar(String message, {bool isError = false}) {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error : Icons.check_circle,
+              color: Colors.white,
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: isError ? Colors.red : Colors.green,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        duration: Duration(seconds: isError ? 4 : 2),
+      ),
+    );
   }
 
   @override
@@ -103,7 +138,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                 Row(
                   children: [
                     IconButton(
-                      onPressed: () => Navigator.pop(context),
+                      onPressed: _isCreating ? null : () => Navigator.pop(context, false),
                       icon: const Icon(Icons.arrow_back, color: Colors.white),
                     ),
                     const Text(
@@ -137,11 +172,51 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // معلومات المستخدم
+                          Container(
+                            padding: const EdgeInsets.all(15),
+                            decoration: BoxDecoration(
+                              color: Colors.purple.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            child: Row(
+                              children: [
+                                const Icon(Icons.person, color: Colors.purple),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      const Text(
+                                        'منشئ الغرفة',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey,
+                                        ),
+                                      ),
+                                      Text(
+                                        widget.playerName,
+                                        style: const TextStyle(
+                                          fontSize: 16,
+                                          fontWeight: FontWeight.bold,
+                                          color: Colors.purple,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
+                          const SizedBox(height: 30),
+
                           // اسم الغرفة
                           _buildSectionTitle('اسم الغرفة'),
                           const SizedBox(height: 10),
                           TextField(
                             controller: _roomNameController,
+                            enabled: !_isCreating,
                             decoration: InputDecoration(
                               hintText: 'أدخل اسم الغرفة',
                               prefixIcon: const Icon(Icons.meeting_room),
@@ -149,11 +224,12 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                                 borderRadius: BorderRadius.circular(15),
                               ),
                               filled: true,
-                              fillColor: Colors.grey.shade50,
+                              fillColor: _isCreating ? Colors.grey.shade100 : Colors.grey.shade50,
                             ),
+                            maxLength: 30,
                           ),
 
-                          const SizedBox(height: 30),
+                          const SizedBox(height: 20),
 
                           // عدد اللاعبين
                           _buildSectionTitle('عدد اللاعبين الأقصى'),
@@ -174,6 +250,47 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                           const SizedBox(height: 10),
                           _buildDurationSelector(),
 
+                          const SizedBox(height: 30),
+
+                          // معلومات إضافية
+                          Container(
+                            padding: const EdgeInsets.all(15),
+                            decoration: BoxDecoration(
+                              color: Colors.blue.withOpacity(0.1),
+                              borderRadius: BorderRadius.circular(15),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    const Icon(Icons.info, color: Colors.blue, size: 20),
+                                    const SizedBox(width: 8),
+                                    const Text(
+                                      'معلومات اللعبة',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.blue,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+                                const Text(
+                                  '• سيتم اختيار جاسوس واحد عشوائياً في كل جولة\n'
+                                      '• اللاعبون العاديون يرون الكلمة، الجاسوس لا يراها\n'
+                                      '• الهدف للجاسوس: عدم الكشف عن هويته\n'
+                                      '• الهدف للآخرين: اكتشاف الجاسوس',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.black54,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+
                           const SizedBox(height: 40),
 
                           // زر الإنشاء
@@ -182,12 +299,13 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                             child: ElevatedButton(
                               onPressed: _isCreating ? null : _createRoom,
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.purple,
+                                backgroundColor: _isCreating ? Colors.grey : Colors.purple,
                                 foregroundColor: Colors.white,
                                 padding: const EdgeInsets.symmetric(vertical: 15),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(15),
                                 ),
+                                elevation: _isCreating ? 0 : 5,
                               ),
                               child: _isCreating
                                   ? const Row(
@@ -214,6 +332,19 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                               ),
                             ),
                           ),
+
+                          if (_isCreating) ...[
+                            const SizedBox(height: 15),
+                            const Text(
+                              'يرجى الانتظار، جاري إنشاء الغرفة وإعداد الإعدادات...',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey,
+                                fontStyle: FontStyle.italic,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -241,7 +372,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   Widget _buildPlayerCountSelector() {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.grey.shade50,
+        color: _isCreating ? Colors.grey.shade100 : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.grey.shade300),
       ),
@@ -250,19 +381,23 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           final isSelected = _maxPlayers == count;
           return Expanded(
             child: GestureDetector(
-              onTap: () => setState(() => _maxPlayers = count),
+              onTap: _isCreating ? null : () => setState(() => _maxPlayers = count),
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 15),
                 decoration: BoxDecoration(
-                  color: isSelected ? Colors.purple : Colors.transparent,
+                  color: isSelected ?
+                  (_isCreating ? Colors.grey : Colors.purple) :
+                  Colors.transparent,
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
                   '$count',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: isSelected ? Colors.white : Colors.black,
+                    color: isSelected ? Colors.white :
+                    (_isCreating ? Colors.grey.shade500 : Colors.black),
                     fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    fontSize: 16,
                   ),
                 ),
               ),
@@ -276,7 +411,7 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   Widget _buildRoundsSelector() {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.grey.shade50,
+        color: _isCreating ? Colors.grey.shade100 : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.grey.shade300),
       ),
@@ -285,19 +420,23 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           final isSelected = _totalRounds == rounds;
           return Expanded(
             child: GestureDetector(
-              onTap: () => setState(() => _totalRounds = rounds),
+              onTap: _isCreating ? null : () => setState(() => _totalRounds = rounds),
               child: Container(
                 padding: const EdgeInsets.symmetric(vertical: 15),
                 decoration: BoxDecoration(
-                  color: isSelected ? Colors.purple : Colors.transparent,
+                  color: isSelected ?
+                  (_isCreating ? Colors.grey : Colors.purple) :
+                  Colors.transparent,
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
                   '$rounds',
                   textAlign: TextAlign.center,
                   style: TextStyle(
-                    color: isSelected ? Colors.white : Colors.black,
+                    color: isSelected ? Colors.white :
+                    (_isCreating ? Colors.grey.shade500 : Colors.black),
                     fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                    fontSize: 16,
                   ),
                 ),
               ),
@@ -310,15 +449,15 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
 
   Widget _buildDurationSelector() {
     final durations = [
-      {'seconds': 180, 'label': '3 دقائق'},
-      {'seconds': 300, 'label': '5 دقائق'},
-      {'seconds': 420, 'label': '7 دقائق'},
-      {'seconds': 600, 'label': '10 دقائق'},
+      {'seconds': 180, 'label': '3 دقائق', 'description': 'سريع'},
+      {'seconds': 300, 'label': '5 دقائق', 'description': 'متوسط'},
+      {'seconds': 420, 'label': '7 دقائق', 'description': 'طويل'},
+      {'seconds': 600, 'label': '10 دقائق', 'description': 'مطول'},
     ];
 
     return Container(
       decoration: BoxDecoration(
-        color: Colors.grey.shade50,
+        color: _isCreating ? Colors.grey.shade100 : Colors.grey.shade50,
         borderRadius: BorderRadius.circular(15),
         border: Border.all(color: Colors.grey.shade300),
       ),
@@ -331,12 +470,14 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
           final isLast = index == durations.length - 1;
 
           return GestureDetector(
-            onTap: () => setState(() => _roundDuration = duration['seconds'] as int),
+            onTap: _isCreating ? null : () => setState(() => _roundDuration = duration['seconds'] as int),
             child: Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
               decoration: BoxDecoration(
-                color: isSelected ? Colors.purple : Colors.transparent,
+                color: isSelected ?
+                (_isCreating ? Colors.grey : Colors.purple) :
+                Colors.transparent,
                 borderRadius: BorderRadius.only(
                   topLeft: isFirst ? const Radius.circular(12) : Radius.zero,
                   topRight: isFirst ? const Radius.circular(12) : Radius.zero,
@@ -347,14 +488,27 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
                     top: BorderSide(color: Colors.grey.shade300, width: 0.5)
                 ) : null,
               ),
-              child: Text(
-                duration['label'] as String,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: isSelected ? Colors.white : Colors.black,
-                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                  fontSize: 16,
-                ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    duration['label'] as String,
+                    style: TextStyle(
+                      color: isSelected ? Colors.white :
+                      (_isCreating ? Colors.grey.shade500 : Colors.black),
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      fontSize: 16,
+                    ),
+                  ),
+                  Text(
+                    duration['description'] as String,
+                    style: TextStyle(
+                      color: isSelected ? Colors.white70 :
+                      (_isCreating ? Colors.grey.shade400 : Colors.grey),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
               ),
             ),
           );

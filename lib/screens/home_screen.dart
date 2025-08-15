@@ -22,6 +22,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _isLoading = false;
   String? _playerId;
   String? _savedPlayerName;
+  UserStatus? _currentUserStatus;
 
   late TabController _tabController;
   late AnimationController _refreshController;
@@ -40,9 +41,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       vsync: this,
     )..repeat(reverse: true);
 
-    // إزالة إنشاء UUID هنا - سيتم في _loadSavedData
-    _loadSavedData();
-    _loadAvailableRooms();
+    _initializeApp();
   }
 
   @override
@@ -54,64 +53,247 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  Future<void> _loadSavedData() async {
-    final prefs = await SharedPreferences.getInstance();
+  Future<void> _initializeApp() async {
+    await _loadSavedData();
+    await _checkUserStatus();
+    await _loadAvailableRooms();
+  }
 
-    // تحميل الاسم المحفوظ
-    final savedName = prefs.getString('player_name');
-    if (savedName != null) {
+  Future<void> _loadSavedData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // تحميل الاسم المحفوظ
+      final savedName = prefs.getString('player_name');
+      if (savedName != null && savedName.isNotEmpty) {
+        setState(() {
+          _savedPlayerName = savedName;
+          _nameController.text = savedName;
+        });
+      }
+
+      // تحميل أو إنشاء معرف ثابت للجهاز
+      String? savedPlayerId = prefs.getString('player_id');
+      if (savedPlayerId == null || savedPlayerId.isEmpty) {
+        savedPlayerId = const Uuid().v4();
+        await prefs.setString('player_id', savedPlayerId);
+        log('تم إنشاء معرف جديد للاعب: $savedPlayerId');
+      } else {
+        log('تم تحميل معرف اللاعب المحفوظ: $savedPlayerId');
+      }
+
       setState(() {
-        _savedPlayerName = savedName;
-        _nameController.text = savedName;
+        _playerId = savedPlayerId;
+      });
+    } catch (e) {
+      log('خطأ في تحميل البيانات المحفوظة: $e');
+      // إنشاء معرف طوارئ
+      setState(() {
+        _playerId = const Uuid().v4();
       });
     }
+  }
 
-    // تحميل أو إنشاء معرف ثابت للجهاز
-    String? savedPlayerId = prefs.getString('player_id');
-    if (savedPlayerId == null) {
-      savedPlayerId = const Uuid().v4();
-      await prefs.setString('player_id', savedPlayerId);
+  Future<void> _checkUserStatus() async {
+    if (_playerId == null) return;
+
+    try {
+      final supabaseService = context.read<SupabaseService>();
+      final status = await supabaseService.checkUserStatus(_playerId!);
+
+      setState(() {
+        _currentUserStatus = status;
+      });
+
+      if (status.inRoom) {
+        log('المستخدم موجود في غرفة: ${status.roomName} (${status.roomId})');
+        _showUserInRoomDialog();
+      }
+    } catch (e) {
+      log('خطأ في التحقق من حالة المستخدم: $e');
     }
+  }
 
-    setState(() {
-      _playerId = savedPlayerId;
-    });
+  void _showUserInRoomDialog() {
+    if (_currentUserStatus?.inRoom != true) return;
 
-    log('معرف اللاعب المحفوظ: $_playerId');
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            Icon(Icons.info, color: Colors.blue.shade600),
+            const SizedBox(width: 10),
+            const Text('أنت في غرفة نشطة'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('أنت موجود حالياً في غرفة:'),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.blue.shade50,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _currentUserStatus?.isOwner == true ? Icons.star : Icons.meeting_room,
+                    color: Colors.blue,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _currentUserStatus?.roomName ?? 'غير معروف',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          _currentUserStatus?.isOwner == true ? 'أنت مالك الغرفة' : 'أنت عضو في الغرفة',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _leaveCurrentRoom();
+            },
+            child: const Text('مغادرة الغرفة', style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _rejoinRoom();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+            child: const Text('العودة للغرفة', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _rejoinRoom() async {
+    if (_currentUserStatus?.roomId == null || _playerId == null) return;
+
+    try {
+      final gameProvider = context.read<GameProvider>();
+      final supabaseService = context.read<SupabaseService>();
+
+      // محاولة إعادة الانضمام للغرفة
+      final room = await supabaseService.getRoomById(_currentUserStatus!.roomId!);
+      if (room != null) {
+        // تحديث GameProvider بمعلومات الغرفة
+        gameProvider.rejoinRoom(room, _playerId!);
+
+        // الانتقال لشاشة اللعبة
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => GameScreen(playerId: _playerId!),
+          ),
+        );
+      } else {
+        _showSnackBar('الغرفة غير موجودة', isError: true);
+        setState(() => _currentUserStatus = UserStatus.free);
+      }
+    } catch (e) {
+      log('خطأ في إعادة الانضمام: $e');
+      _showSnackBar('فشل في العودة للغرفة', isError: true);
+    }
+  }
+
+  Future<void> _leaveCurrentRoom() async {
+    if (_playerId == null) return;
+
+    try {
+      final supabaseService = context.read<SupabaseService>();
+      await supabaseService.leaveRoom(_playerId!);
+
+      setState(() => _currentUserStatus = UserStatus.free);
+      _showSnackBar('تم مغادرة الغرفة');
+
+      // إعادة تحميل القوائم
+      _loadAvailableRooms();
+    } catch (e) {
+      log('خطأ في مغادرة الغرفة: $e');
+      _showSnackBar('فشل في مغادرة الغرفة', isError: true);
+    }
   }
 
   Future<void> _savePlayerName(String name) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('player_name', name);
-    setState(() => _savedPlayerName = name);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('player_name', name);
+      setState(() => _savedPlayerName = name);
+      log('تم حفظ اسم اللاعب: $name');
+    } catch (e) {
+      log('خطأ في حفظ اسم اللاعب: $e');
+    }
   }
 
   Future<void> _loadAvailableRooms() async {
     if (_playerId == null) {
-      // إذا لم يتم تحميل معرف اللاعب بعد، انتظار قليل
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (_playerId == null) return;
+      log('معرف اللاعب غير متاح');
+      return;
     }
 
     setState(() => _isLoading = true);
     _refreshController.forward();
 
-    final supabaseService = context.read<SupabaseService>();
-    final allRooms = await supabaseService.getAvailableRooms();
+    try {
+      final supabaseService = context.read<SupabaseService>();
+      final allRooms = await supabaseService.getAvailableRooms();
 
-    setState(() {
-      // تصفية الغرف بناءً على معرف اللاعب المحفوظ
-      _availableRooms = allRooms.where((room) => room.creatorId != _playerId).toList();
-      _myRooms = allRooms.where((room) => room.creatorId == _playerId).toList();
-      _isLoading = false;
-    });
+      // تصفية الغرف بناءً على معرف اللاعب
+      final availableRooms = <GameRoom>[];
+      final myRooms = <GameRoom>[];
 
-    _refreshController.reset();
+      for (final room in allRooms) {
+        if (room.creatorId == _playerId) {
+          myRooms.add(room);
+        } else {
+          // التأكد من أن اللاعب ليس في هذه الغرفة
+          final isPlayerInRoom = room.players.any((player) => player.id == _playerId);
+          if (!isPlayerInRoom) {
+            availableRooms.add(room);
+          }
+        }
+      }
 
-    log('تم تحميل ${allRooms.length} غرفة، منها ${_myRooms.length} غرف خاصة بي');
+      setState(() {
+        _availableRooms = availableRooms;
+        _myRooms = myRooms;
+        _isLoading = false;
+      });
+
+      log('تم تحميل ${allRooms.length} غرفة، منها ${myRooms.length} غرف خاصة بي و ${availableRooms.length} غرف متاحة');
+    } catch (e) {
+      log('خطأ في تحميل الغرف: $e');
+      setState(() => _isLoading = false);
+    } finally {
+      _refreshController.reset();
+    }
   }
 
   Future<void> _joinRoom(GameRoom room) async {
+    // التحقق من صحة البيانات
     if (_nameController.text.trim().isEmpty) {
       _showSnackBar('يرجى إدخال اسمك أولاً', isError: true);
       return;
@@ -122,18 +304,26 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       return;
     }
 
+    // التحقق من حالة المستخدم الحالية
+    if (_currentUserStatus?.inRoom == true) {
+      _showSnackBar('يجب مغادرة الغرفة الحالية أولاً', isError: true);
+      return;
+    }
+
     await _savePlayerName(_nameController.text.trim());
 
     // عرض مؤشر التحميل
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 20),
-            Text('جاري الانضمام للغرفة...'),
+            const CircularProgressIndicator(),
+            const SizedBox(height: 20),
+            Text('جاري الانضمام لغرفة "${room.name}"...'),
           ],
         ),
       ),
@@ -143,7 +333,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       final gameProvider = context.read<GameProvider>();
       final supabaseService = context.read<SupabaseService>();
 
-      final success = await supabaseService.joinRoom(
+      final result = await supabaseService.joinRoom(
         room.id,
         _playerId!,
         _nameController.text.trim(),
@@ -152,21 +342,42 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       // إغلاق مؤشر التحميل
       Navigator.pop(context);
 
-      if (success) {
-        final joinedSuccessfully = gameProvider.joinRoom(room.id, _playerId!, _nameController.text.trim());
+      if (result.success) {
+        // محاولة الانضمام في GameProvider
+        final success = gameProvider.joinRoom(room.id, _playerId!, _nameController.text.trim());
 
-        if (joinedSuccessfully) {
+        if (success) {
+          // تحديث حالة المستخدم
+          setState(() {
+            _currentUserStatus = UserStatus(
+              inRoom: true,
+              roomId: room.id,
+              roomName: room.name,
+              isOwner: false,
+              roomState: 'waiting',
+            );
+          });
+
           Navigator.push(
             context,
             MaterialPageRoute(
               builder: (context) => GameScreen(playerId: _playerId!),
             ),
-          );
+          ).then((_) {
+            // عند العودة من شاشة اللعبة، تحديث الحالة
+            _checkUserStatus();
+            _loadAvailableRooms();
+          });
         } else {
-          _showSnackBar('الغرفة ممتلئة بالفعل', isError: true);
+          _showSnackBar('فشل في الانضمام للغرفة محلياً', isError: true);
         }
       } else {
-        _showSnackBar('فشل في الانضمام للغرفة، يرجى المحاولة مرة أخرى', isError: true);
+        _showSnackBar(result.reason, isError: true);
+
+        // إذا كان المستخدم في غرفة أخرى، تحديث الحالة
+        if (result.existingRoomId != null) {
+          _checkUserStatus();
+        }
       }
     } catch (e) {
       // إغلاق مؤشر التحميل في حالة الخطأ
@@ -178,9 +389,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   Future<void> _deleteRoom(GameRoom room) async {
     final confirmed = await _showDeleteDialog(room);
-    if (confirmed == true) {
+    if (confirmed == true && _playerId != null) {
       final supabaseService = context.read<SupabaseService>();
-      final success = await supabaseService.deleteRoom(room.id);
+      final success = await supabaseService.deleteRoom(room.id, _playerId!);
 
       if (success) {
         _showSnackBar('تم حذف الغرفة بنجاح');
@@ -203,7 +414,24 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             Text('حذف الغرفة'),
           ],
         ),
-        content: Text('هل تريد حذف الغرفة "${room.name}"؟'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('هل تريد حذف الغرفة "${room.name}"؟'),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Text(
+                'تحذير: سيتم إخراج جميع اللاعبين من الغرفة',
+                style: TextStyle(fontSize: 12, color: Colors.red),
+              ),
+            ),
+          ],
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -220,6 +448,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _showSnackBar(String message, {bool isError = false}) {
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Row(
@@ -235,6 +465,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         backgroundColor: isError ? Colors.red : Colors.green,
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        duration: Duration(seconds: isError ? 4 : 2),
       ),
     );
   }
@@ -259,6 +490,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           child: Column(
             children: [
               _buildHeader(),
+              if (_currentUserStatus?.inRoom == true) _buildCurrentRoomBanner(),
               _buildPlayerNameSection(),
               _buildTabSection(),
               _buildRoomsList(),
@@ -318,9 +550,51 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildPlayerNameSection() {
+  Widget _buildCurrentRoomBanner() {
+    if (_currentUserStatus?.inRoom != true) return const SizedBox();
+
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 20),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.orange.shade100,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.orange, width: 2),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _currentUserStatus?.isOwner == true ? Icons.star : Icons.meeting_room,
+            color: Colors.orange,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'أنت في غرفة: ${_currentUserStatus?.roomName}',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                Text(
+                  _currentUserStatus?.isOwner == true ? 'أنت مالك الغرفة' : 'أنت عضو في الغرفة',
+                  style: const TextStyle(fontSize: 12, color: Colors.grey),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: _rejoinRoom,
+            child: const Text('العودة', style: TextStyle(color: Colors.orange)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPlayerNameSection() {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Colors.white,
@@ -371,6 +645,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           const SizedBox(height: 15),
           TextField(
             controller: _nameController,
+            enabled: _currentUserStatus?.inRoom != true, // منع التعديل إذا كان في غرفة
             decoration: InputDecoration(
               hintText: 'أدخل اسمك هنا',
               prefixIcon: const Icon(Icons.edit, color: Color(0xFF667eea)),
@@ -379,13 +654,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 borderSide: BorderSide.none,
               ),
               filled: true,
-              fillColor: const Color(0xFF667eea).withOpacity(0.1),
+              fillColor: _currentUserStatus?.inRoom == true
+                  ? Colors.grey.shade100
+                  : const Color(0xFF667eea).withOpacity(0.1),
               contentPadding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
             ),
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
             onChanged: (value) {
-              if (value.isNotEmpty) {
+              if (value.isNotEmpty && _currentUserStatus?.inRoom != true) {
                 _savePlayerName(value);
               }
             },
@@ -448,7 +725,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _buildRefreshButton(),
-              _buildStatsCard('المتصلون', '12', Icons.people, Colors.green),
+              _buildStatsCard('المتصلون', '${_availableRooms.fold(0, (sum, room) => sum + room.players.length)}', Icons.people, Colors.green),
               _buildStatsCard('الغرف النشطة', '${_availableRooms.length + _myRooms.length}', Icons.meeting_room, Colors.blue),
             ],
           ),
@@ -463,7 +740,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       animation: _refreshController,
       builder: (context, child) {
         return GestureDetector(
-          onTap: _loadAvailableRooms,
+          onTap: () {
+            _checkUserStatus();
+            _loadAvailableRooms();
+          },
           child: Container(
             padding: const EdgeInsets.all(15),
             decoration: BoxDecoration(
@@ -602,6 +882,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final maxPlayers = room.maxPlayers;
     final isFull = playersCount >= maxPlayers;
     final fillPercentage = playersCount / maxPlayers;
+    final canJoin = !isFull && !isMyRoom && _currentUserStatus?.inRoom != true;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 15),
@@ -754,17 +1035,17 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               children: [
                 Expanded(
                   child: ElevatedButton.icon(
-                    onPressed: isFull || isMyRoom ? null : () => _joinRoom(room),
+                    onPressed: canJoin ? () => _joinRoom(room) : null,
                     icon: Icon(
-                      isFull ? Icons.lock : Icons.login,
+                      _getJoinButtonIcon(isFull, isMyRoom),
                       size: 20,
                     ),
                     label: Text(
-                      isFull ? 'ممتلئة' : isMyRoom ? 'غرفتك' : 'انضمام',
+                      _getJoinButtonText(isFull, isMyRoom),
                       style: const TextStyle(fontWeight: FontWeight.bold),
                     ),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: isFull || isMyRoom ? Colors.grey : const Color(0xFF667eea),
+                      backgroundColor: canJoin ? const Color(0xFF667eea) : Colors.grey,
                       foregroundColor: Colors.white,
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(15),
@@ -797,16 +1078,42 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
+  IconData _getJoinButtonIcon(bool isFull, bool isMyRoom) {
+    if (isFull) return Icons.lock;
+    if (isMyRoom) return Icons.star;
+    if (_currentUserStatus?.inRoom == true) return Icons.block;
+    return Icons.login;
+  }
+
+  String _getJoinButtonText(bool isFull, bool isMyRoom) {
+    if (isFull) return 'ممتلئة';
+    if (isMyRoom) return 'غرفتك';
+    if (_currentUserStatus?.inRoom == true) return 'في غرفة أخرى';
+    return 'انضمام';
+  }
+
   Widget _buildFloatingActionButton() {
+    final canCreate = _currentUserStatus?.inRoom != true && _nameController.text.trim().isNotEmpty;
+
     return AnimatedBuilder(
       animation: _floatingController,
       builder: (context, child) {
         return Transform.scale(
           scale: 1.0 + (_floatingController.value * 0.1),
           child: FloatingActionButton.extended(
-            onPressed: () async {
+            onPressed: canCreate ? () async {
               if (_nameController.text.trim().isEmpty) {
                 _showSnackBar('يرجى إدخال اسمك أولاً', isError: true);
+                return;
+              }
+
+              if (_currentUserStatus?.inRoom == true) {
+                _showSnackBar('يجب مغادرة الغرفة الحالية أولاً', isError: true);
+                return;
+              }
+
+              if (_playerId == null) {
+                _showSnackBar('خطأ في معرف اللاعب، يرجى إعادة تشغيل التطبيق', isError: true);
                 return;
               }
 
@@ -823,12 +1130,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
               );
 
               if (result == true) {
+                _checkUserStatus();
                 _loadAvailableRooms();
               }
-            },
+            } : null,
             icon: const Icon(Icons.add),
-            label: const Text('إنشاء غرفة'),
-            backgroundColor: const Color(0xFF667eea),
+            label: Text(_currentUserStatus?.inRoom == true ? 'في غرفة' : 'إنشاء غرفة'),
+            backgroundColor: canCreate ? const Color(0xFF667eea) : Colors.grey,
             foregroundColor: Colors.white,
             elevation: 8,
             shape: RoundedRectangleBorder(

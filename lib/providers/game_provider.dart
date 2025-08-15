@@ -19,6 +19,24 @@ class Player {
     this.votes = 0,
     this.role = PlayerRole.normal,
   });
+
+  Player copyWith({
+    String? id,
+    String? name,
+    bool? isConnected,
+    bool? isVoted,
+    int? votes,
+    PlayerRole? role,
+  }) {
+    return Player(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      isConnected: isConnected ?? this.isConnected,
+      isVoted: isVoted ?? this.isVoted,
+      votes: votes ?? this.votes,
+      role: role ?? this.role,
+    );
+  }
 }
 
 class GameRoom {
@@ -49,6 +67,36 @@ class GameRoom {
     this.spyId,
     this.roundStartTime,
   });
+
+  GameRoom copyWith({
+    String? id,
+    String? name,
+    String? creatorId,
+    int? maxPlayers,
+    int? totalRounds,
+    int? roundDuration,
+    List<Player>? players,
+    GameState? state,
+    int? currentRound,
+    String? currentWord,
+    String? spyId,
+    DateTime? roundStartTime,
+  }) {
+    return GameRoom(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      creatorId: creatorId ?? this.creatorId,
+      maxPlayers: maxPlayers ?? this.maxPlayers,
+      totalRounds: totalRounds ?? this.totalRounds,
+      roundDuration: roundDuration ?? this.roundDuration,
+      players: players ?? this.players,
+      state: state ?? this.state,
+      currentRound: currentRound ?? this.currentRound,
+      currentWord: currentWord ?? this.currentWord,
+      spyId: spyId ?? this.spyId,
+      roundStartTime: roundStartTime ?? this.roundStartTime,
+    );
+  }
 }
 
 class GameProvider extends ChangeNotifier {
@@ -62,17 +110,20 @@ class GameProvider extends ChangeNotifier {
     'بنك', 'صيدلية', 'سوق', 'سينما', 'متحف',
     'شاطئ', 'جبل', 'غابة', 'صحراء', 'نهر',
     'طائرة', 'سيارة', 'قطار', 'سفينة', 'دراجة',
-    'طبيب', 'مدرس', 'مهندس', 'طباخ', 'فنان'
+    'طبيب', 'مدرس', 'مهندس', 'طباخ', 'فنان',
+    'مطار', 'قطب', 'فندق', 'مخبز', 'ملعب',
+    'جامعة', 'مصنع', 'محطة', 'حمام سباحة', 'مزرعة'
   ];
 
   GameRoom? get currentRoom => _currentRoom;
   Player? get currentPlayer => _currentPlayer;
   List<GameRoom> get availableRooms => _availableRooms;
 
-  // إنشاء غرفة جديدة
+  // إنشاء غرفة جديدة مع إضافة المنشئ
   GameRoom createRoom({
     required String name,
     required String creatorId,
+    required String creatorName,
     required int maxPlayers,
     required int totalRounds,
     required int roundDuration,
@@ -86,157 +137,379 @@ class GameProvider extends ChangeNotifier {
       roundDuration: roundDuration,
     );
 
+    // إضافة المنشئ كأول لاعب
+    final creator = Player(
+      id: creatorId,
+      name: creatorName,
+      isConnected: true,
+    );
+    room.players = [creator];
+
     _availableRooms.add(room);
+    _currentRoom = room;
+    _currentPlayer = creator;
+
     notifyListeners();
     return room;
   }
 
-  // الانضمام لغرفة
+  // الانضمام لغرفة مع التحقق الآمن
   bool joinRoom(String roomId, String playerId, String playerName) {
-    final room = _availableRooms.firstWhere((r) => r.id == roomId);
+    try {
+      // البحث عن الغرفة بأمان
+      GameRoom? targetRoom;
+      for (final room in _availableRooms) {
+        if (room.id == roomId) {
+          targetRoom = room;
+          break;
+        }
+      }
 
-    if (room.players.length >= room.maxPlayers) {
+      if (targetRoom == null) {
+        debugPrint('الغرفة غير موجودة: $roomId');
+        return false;
+      }
+
+      // التحقق من امتلاء الغرفة
+      if (targetRoom.players.length >= targetRoom.maxPlayers) {
+        debugPrint('الغرفة ممتلئة');
+        return false;
+      }
+
+      // التحقق من وجود اللاعب مسبقاً
+      final existingPlayerIndex = targetRoom.players.indexWhere((p) => p.id == playerId);
+      if (existingPlayerIndex != -1) {
+        // تحديث حالة الاتصال للاعب الموجود
+        targetRoom.players[existingPlayerIndex] = targetRoom.players[existingPlayerIndex].copyWith(
+          isConnected: true,
+          name: playerName,
+        );
+      } else {
+        // إضافة لاعب جديد
+        final newPlayer = Player(
+          id: playerId,
+          name: playerName,
+          isConnected: true,
+        );
+        targetRoom.players = [...targetRoom.players, newPlayer];
+      }
+
+      _currentRoom = targetRoom;
+      _currentPlayer = targetRoom.players.firstWhere((p) => p.id == playerId);
+
+      // بدء اللعبة إذا اكتمل العدد والغرفة في حالة الانتظار
+      if (targetRoom.players.length == targetRoom.maxPlayers && targetRoom.state == GameState.waiting) {
+        _startGame();
+      }
+
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint('خطأ في الانضمام للغرفة: $e');
       return false;
     }
-
-    final player = Player(id: playerId, name: playerName);
-    room.players = [...room.players, player];
-    _currentRoom = room;
-    _currentPlayer = player;
-
-    // بدء اللعبة إذا اكتمل العدد
-    if (room.players.length == room.maxPlayers) {
-      startGame();
-    }
-
-    notifyListeners();
-    return true;
   }
 
-  // بدء اللعبة
+  // إعادة الانضمام لغرفة موجودة
+  void rejoinRoom(GameRoom room, String playerId) {
+    try {
+      _currentRoom = room;
+
+      // البحث عن اللاعب الحالي بأمان
+      Player? currentPlayer;
+      for (final player in room.players) {
+        if (player.id == playerId) {
+          currentPlayer = player;
+          break;
+        }
+      }
+
+      _currentPlayer = currentPlayer;
+      notifyListeners();
+    } catch (e) {
+      debugPrint('خطأ في إعادة الانضمام للغرفة: $e');
+    }
+  }
+
+  // بدء اللعبة مع التحقق من الأمان
   void startGame() {
-    if (_currentRoom == null) return;
+    _startGame();
+  }
+
+  // بدء اللعبة (دالة داخلية)
+  void _startGame() {
+    if (_currentRoom == null || _currentRoom!.players.isEmpty) {
+      debugPrint('لا توجد غرفة أو لاعبين لبدء اللعبة');
+      return;
+    }
 
     _currentRoom!.state = GameState.playing;
     _currentRoom!.currentRound = 1;
     _startNewRound();
   }
 
-  // بدء جولة جديدة
+  // بدء جولة جديدة مع تحسينات
   void _startNewRound() {
-    if (_currentRoom == null) return;
+    if (_currentRoom == null || _currentRoom!.players.isEmpty) return;
 
-    // اختيار الجاسوس عشوائياً
-    _currentRoom!.players.shuffle();
-    final spyIndex = DateTime.now().millisecond % _currentRoom!.players.length;
-    _currentRoom!.spyId = _currentRoom!.players[spyIndex].id;
+    try {
+      // إنشاء نسخة من قائمة اللاعبين للخلط
+      final playersToShuffle = List<Player>.from(_currentRoom!.players);
+      playersToShuffle.shuffle();
 
-    // تعيين الأدوار
-    for (int i = 0; i < _currentRoom!.players.length; i++) {
-      _currentRoom!.players[i].role = i == spyIndex ? PlayerRole.spy : PlayerRole.normal;
-      _currentRoom!.players[i].votes = 0;
-      _currentRoom!.players[i].isVoted = false;
-    }
+      // اختيار الجاسوس عشوائياً
+      final spyIndex = DateTime.now().millisecond % playersToShuffle.length;
+      _currentRoom!.spyId = playersToShuffle[spyIndex].id;
 
-    // اختيار كلمة عشوائية
-    _gameWords.shuffle();
-    _currentRoom!.currentWord = _gameWords.first;
-    _currentRoom!.roundStartTime = DateTime.now();
+      // تعيين الأدوار وإعادة تعيين الإحصائيات
+      for (int i = 0; i < _currentRoom!.players.length; i++) {
+        final playerId = _currentRoom!.players[i].id;
+        final isSpyPlayer = playerId == _currentRoom!.spyId;
 
-    notifyListeners();
-
-    // انتهاء الجولة تلقائياً
-    Future.delayed(Duration(seconds: _currentRoom!.roundDuration), () {
-      if (_currentRoom?.state == GameState.playing) {
-        startVoting();
+        _currentRoom!.players[i] = _currentRoom!.players[i].copyWith(
+          role: isSpyPlayer ? PlayerRole.spy : PlayerRole.normal,
+          votes: 0,
+          isVoted: false,
+        );
       }
-    });
+
+      // تحديث دور اللاعب الحالي
+      if (_currentPlayer != null) {
+        final currentPlayerIndex = _currentRoom!.players.indexWhere((p) => p.id == _currentPlayer!.id);
+        if (currentPlayerIndex != -1) {
+          _currentPlayer = _currentRoom!.players[currentPlayerIndex];
+        }
+      }
+
+      // اختيار كلمة عشوائية
+      final shuffledWords = List<String>.from(_gameWords);
+      shuffledWords.shuffle();
+      _currentRoom!.currentWord = shuffledWords.first;
+      _currentRoom!.roundStartTime = DateTime.now();
+
+      debugPrint('بدأت جولة جديدة - الجاسوس: ${_currentRoom!.spyId}, الكلمة: ${_currentRoom!.currentWord}');
+
+      notifyListeners();
+
+      // انتهاء الجولة تلقائياً
+      Future.delayed(Duration(seconds: _currentRoom!.roundDuration), () {
+        if (_currentRoom?.state == GameState.playing &&
+            _currentRoom?.currentRound == _currentRoom?.currentRound) {
+          startVoting();
+        }
+      });
+    } catch (e) {
+      debugPrint('خطأ في بدء الجولة الجديدة: $e');
+    }
   }
 
   // بدء التصويت
   void startVoting() {
     if (_currentRoom == null) return;
 
-    _currentRoom!.state = GameState.voting;
-    notifyListeners();
+    try {
+      _currentRoom!.state = GameState.voting;
+      notifyListeners();
+      debugPrint('بدأ وقت التصويت');
+    } catch (e) {
+      debugPrint('خطأ في بدء التصويت: $e');
+    }
   }
 
-  // التصويت على لاعب
+  // التصويت على لاعب مع التحقق الآمن
   void votePlayer(String voterId, String targetId) {
-    if (_currentRoom == null || _currentRoom!.state != GameState.voting) return;
-
-    final voter = _currentRoom!.players.firstWhere((p) => p.id == voterId);
-    if (voter.isVoted) return;
-
-    voter.isVoted = true;
-    final target = _currentRoom!.players.firstWhere((p) => p.id == targetId);
-    target.votes++;
-
-    // التحقق من انتهاء التصويت
-    final totalVoted = _currentRoom!.players.where((p) => p.isVoted).length;
-    if (totalVoted == _currentRoom!.players.length) {
-      _endRound();
+    if (_currentRoom == null || _currentRoom!.state != GameState.voting) {
+      debugPrint('لا يمكن التصويت في هذا الوقت');
+      return;
     }
 
-    notifyListeners();
+    try {
+      // العثور على اللاعب المصوت بأمان
+      int voterIndex = -1;
+      for (int i = 0; i < _currentRoom!.players.length; i++) {
+        if (_currentRoom!.players[i].id == voterId) {
+          voterIndex = i;
+          break;
+        }
+      }
+
+      if (voterIndex == -1) {
+        debugPrint('اللاعب المصوت غير موجود: $voterId');
+        return;
+      }
+
+      if (_currentRoom!.players[voterIndex].isVoted) {
+        debugPrint('اللاعب صوت مسبقاً');
+        return;
+      }
+
+      // العثور على الهدف بأمان
+      int targetIndex = -1;
+      for (int i = 0; i < _currentRoom!.players.length; i++) {
+        if (_currentRoom!.players[i].id == targetId) {
+          targetIndex = i;
+          break;
+        }
+      }
+
+      if (targetIndex == -1) {
+        debugPrint('اللاعب المستهدف غير موجود: $targetId');
+        return;
+      }
+
+      // تسجيل التصويت
+      _currentRoom!.players[voterIndex] = _currentRoom!.players[voterIndex].copyWith(isVoted: true);
+      _currentRoom!.players[targetIndex] = _currentRoom!.players[targetIndex].copyWith(
+          votes: _currentRoom!.players[targetIndex].votes + 1
+      );
+
+      // التحقق من انتهاء التصويت
+      final totalVoted = _currentRoom!.players.where((p) => p.isVoted).length;
+      if (totalVoted >= _currentRoom!.players.length) {
+        _endRound();
+      }
+
+      notifyListeners();
+      debugPrint('تم تسجيل صوت من $voterId لـ $targetId');
+    } catch (e) {
+      debugPrint('خطأ في التصويت: $e');
+    }
   }
 
-  // انتهاء الجولة
+  // انتهاء الجولة مع تحسينات
   void _endRound() {
     if (_currentRoom == null) return;
 
-    // العثور على اللاعب الأكثر تصويتاً
-    final sortedPlayers = [..._currentRoom!.players]..sort((a, b) => b.votes.compareTo(a.votes));
-    final mostVoted = sortedPlayers.first;
+    try {
+      // العثور على اللاعب الأكثر تصويتاً
+      if (_currentRoom!.players.isEmpty) return;
 
-    // إزالة اللاعب الأكثر تصويتاً
-    _currentRoom!.players.removeWhere((p) => p.id == mostVoted.id);
+      final sortedPlayers = List<Player>.from(_currentRoom!.players);
+      sortedPlayers.sort((a, b) => b.votes.compareTo(a.votes));
+      final mostVoted = sortedPlayers.first;
 
-    // التحقق من نتيجة اللعبة
-    final spy = _currentRoom!.players.where((p) => p.role == PlayerRole.spy).toList();
+      debugPrint('اللاعب الأكثر تصويتاً: ${mostVoted.name} (${mostVoted.votes} أصوات)');
 
-    if (spy.isEmpty) {
-      // الجاسوس تم إقصاؤه - فوز اللاعبين العاديين
-      _currentRoom!.state = GameState.finished;
-    } else if (_currentRoom!.players.length <= 2) {
-      // بقي الجاسوس للنهاية - فوز الجاسوس
-      _currentRoom!.state = GameState.finished;
-    } else if (_currentRoom!.currentRound >= _currentRoom!.totalRounds) {
-      // انتهاء الجولات - فوز الجاسوس
-      _currentRoom!.state = GameState.finished;
-    } else {
-      // جولة جديدة
-      _currentRoom!.currentRound++;
-      _startNewRound();
+      // إزالة اللاعب الأكثر تصويتاً
+      _currentRoom!.players.removeWhere((p) => p.id == mostVoted.id);
+
+      // إذا كان اللاعب المحذوف هو اللاعب الحالي
+      if (_currentPlayer?.id == mostVoted.id) {
+        _currentPlayer = null;
+      }
+
+      // التحقق من نتيجة اللعبة
+      final remainingSpies = _currentRoom!.players.where((p) => p.role == PlayerRole.spy).toList();
+      final normalPlayers = _currentRoom!.players.where((p) => p.role == PlayerRole.normal).toList();
+
+      if (remainingSpies.isEmpty) {
+        // الجاسوس تم إقصاؤه - فوز اللاعبين العاديين
+        debugPrint('فوز اللاعبين العاديين - تم إقصاء الجاسوس');
+        _currentRoom!.state = GameState.finished;
+      } else if (normalPlayers.length <= 1) {
+        // بقي الجاسوس مع لاعب واحد أو أقل - فوز الجاسوس
+        debugPrint('فوز الجاسوس - بقي مع عدد قليل من اللاعبين');
+        _currentRoom!.state = GameState.finished;
+      } else if (_currentRoom!.currentRound >= _currentRoom!.totalRounds) {
+        // انتهاء الجولات - فوز الجاسوس
+        debugPrint('فوز الجاسوس - انتهاء الجولات');
+        _currentRoom!.state = GameState.finished;
+      } else {
+        // جولة جديدة
+        _currentRoom!.currentRound++;
+        debugPrint('بدء جولة جديدة رقم ${_currentRoom!.currentRound}');
+        _startNewRound();
+      }
+
+      notifyListeners();
+    } catch (e) {
+      debugPrint('خطأ في انتهاء الجولة: $e');
     }
+  }
 
+  // تحديث قائمة الغرف المتاحة
+  void updateAvailableRooms(List<GameRoom> rooms) {
+    _availableRooms = rooms;
     notifyListeners();
   }
 
-  // مغادرة الغرفة
+  // مغادرة الغرفة مع تنظيف آمن
   void leaveRoom() {
-    _currentRoom = null;
-    _currentPlayer = null;
-    notifyListeners();
+    try {
+      if (_currentRoom != null && _currentPlayer != null) {
+        // إزالة اللاعب من قائمة اللاعبين
+        _currentRoom!.players.removeWhere((p) => p.id == _currentPlayer!.id);
+
+        // إذا كان مالك الغرفة، إزالة الغرفة من القائمة
+        if (_currentRoom!.creatorId == _currentPlayer!.id) {
+          _availableRooms.removeWhere((room) => room.id == _currentRoom!.id);
+        }
+      }
+
+      _currentRoom = null;
+      _currentPlayer = null;
+      notifyListeners();
+      debugPrint('تم مغادرة الغرفة');
+    } catch (e) {
+      debugPrint('خطأ في مغادرة الغرفة: $e');
+    }
   }
 
   // معلومات الوقت المتبقي
   Duration? get remainingTime {
     if (_currentRoom?.roundStartTime == null) return null;
 
-    final elapsed = DateTime.now().difference(_currentRoom!.roundStartTime!);
-    final total = Duration(seconds: _currentRoom!.roundDuration);
-    final remaining = total - elapsed;
+    try {
+      final elapsed = DateTime.now().difference(_currentRoom!.roundStartTime!);
+      final total = Duration(seconds: _currentRoom!.roundDuration);
+      final remaining = total - elapsed;
 
-    return remaining.isNegative ? Duration.zero : remaining;
+      return remaining.isNegative ? Duration.zero : remaining;
+    } catch (e) {
+      debugPrint('خطأ في حساب الوقت المتبقي: $e');
+      return null;
+    }
   }
 
   // الحصول على الكلمة للاعب الحالي
   String? get currentWordForPlayer {
     if (_currentRoom == null || _currentPlayer == null) return null;
 
-    return _currentPlayer!.role == PlayerRole.spy
-        ? '??? أنت الجاسوس'
-        : _currentRoom!.currentWord;
+    try {
+      return _currentPlayer!.role == PlayerRole.spy
+          ? '??? أنت الجاسوس'
+          : _currentRoom!.currentWord;
+    } catch (e) {
+      debugPrint('خطأ في الحصول على الكلمة: $e');
+      return null;
+    }
+  }
+
+  // التحقق من حالة اللعبة
+  bool get isGameActive => _currentRoom != null && _currentPlayer != null;
+
+  // التحقق من كون اللاعب جاسوساً
+  bool get isCurrentPlayerSpy => _currentPlayer?.role == PlayerRole.spy;
+
+  // الحصول على عدد اللاعبين المتصلين
+  int get connectedPlayersCount => _currentRoom?.players.where((p) => p.isConnected).length ?? 0;
+
+  // الحصول على معلومات إحصائية
+  Map<String, dynamic> get gameStats => {
+    'totalPlayers': _currentRoom?.players.length ?? 0,
+    'connectedPlayers': connectedPlayersCount,
+    'currentRound': _currentRoom?.currentRound ?? 0,
+    'totalRounds': _currentRoom?.totalRounds ?? 0,
+    'gameState': _currentRoom?.state.toString() ?? 'unknown',
+    'isPlayerSpy': isCurrentPlayerSpy,
+  };
+
+  // تنظيف الموارد
+  @override
+  void dispose() {
+    _currentRoom = null;
+    _currentPlayer = null;
+    _availableRooms.clear();
+    super.dispose();
   }
 }
