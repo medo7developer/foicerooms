@@ -3,7 +3,6 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 class WebRTCService {
-  RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
   final Map<String, RTCPeerConnection> _peers = {};
   final Map<String, MediaStream> _remoteStreams = {};
@@ -15,13 +14,6 @@ class WebRTCService {
       {'urls': 'stun:stun1.l.google.com:19302'},
     ],
     'sdpSemantics': 'unified-plan',
-  };
-
-  final Map<String, dynamic> _constraints = {
-    'mandatory': {},
-    'optional': [
-      {'DtlsSrtpKeyAgreement': true},
-    ],
   };
 
   // طلب الصلاحيات
@@ -59,10 +51,11 @@ class WebRTCService {
     }
   }
 
-  // إنشاء اتصال peer
-  Future<RTCPeerConnection> createPeerConnection(String peerId) async {
+  // إنشاء اتصال peer - تم إصلاح المشكلة
+  Future<RTCPeerConnection> createPeerConnectionForPeer(String peerId) async {
     try {
-      final pc = await RTCPeerConnection.create(_configuration, _constraints);
+      // استخدام createPeerConnection من الـ package
+      final pc = await createPeerConnection(_configuration);
 
       // إضافة المسار الصوتي المحلي
       if (_localStream != null) {
@@ -76,12 +69,10 @@ class WebRTCService {
         _onIceCandidate(peerId, candidate);
       };
 
-      pc.onAddStream = (MediaStream stream) {
-        _onAddRemoteStream(peerId, stream);
-      };
-
-      pc.onRemoveStream = (MediaStream stream) {
-        _onRemoveRemoteStream(peerId, stream);
+      pc.onTrack = (RTCTrackEvent event) {
+        if (event.streams.isNotEmpty) {
+          _onAddRemoteStream(peerId, event.streams.first);
+        }
       };
 
       pc.onConnectionState = (RTCPeerConnectionState state) {

@@ -239,141 +239,133 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
   }
 
   Widget _buildPlayerCountSelector() {
-    Widget _buildDurationSelector() {
-      final durations = [
-        {'seconds': 180, 'label': '3 دقائق'},
-        {'seconds': 300, 'label': '5 دقائق'},
-        {'seconds': 420, 'label': '7 دقائق'},
-        {'seconds': 600, 'label': '10 دقائق'},
-      ];
-
-      return Container(
-        decoration: BoxDecoration(
-          color: Colors.grey.shade50,
-          borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: Colors.grey.shade300),
-        ),
-        child: Column(
-          children: durations.asMap().entries.map((entry) {
-            final index = entry.key;
-            final duration = entry.value;
-            final isSelected = _roundDuration == duration['seconds'];
-            final isFirst = index == 0;
-            final isLast = index == durations.length - 1;
-
-            return GestureDetector(
-              onTap: () => setState(() => _roundDuration = duration['seconds'] as int),
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Row(
+        children: [3, 4, 5, 6, 7, 8].map((count) {
+          final isSelected = _maxPlayers == count;
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _maxPlayers = count),
               child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
+                padding: const EdgeInsets.symmetric(vertical: 15),
                 decoration: BoxDecoration(
                   color: isSelected ? Colors.purple : Colors.transparent,
-                  borderRadius: BorderRadius.only(
-                    topLeft: isFirst ? const Radius.circular(12) : Radius.zero,
-                    topRight: isFirst ? const Radius.circular(12) : Radius.zero,
-                    bottomLeft: isLast ? const Radius.circular(12) : Radius.zero,
-                    bottomRight: isLast ? const Radius.circular(12) : Radius.zero,
-                  ),
-                  border: index > 0 ? Border(
-                      top: BorderSide(color: Colors.grey.shade300, width: 0.5)
-                  ) : null,
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  duration['label'] as String,
+                  '$count',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: isSelected ? Colors.white : Colors.black,
                     fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                    fontSize: 16,
                   ),
                 ),
               ),
-            );
-          }).toList(),
-        ),
-      );
-    }
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
 
-    @override
-    void dispose() {
-      _roomNameController.dispose();
-      super.dispose();
-    }
-  }Decoration(
-  color: Colors.grey.shade50,
-  borderRadius: BorderRadius.circular(15),
-  border: Border.all(color: Colors.grey.shade300),
-  ),
-  child: Row(
-  children: [3, 4, 5, 6, 7, 8].map((count) {
-  final isSelected = _maxPlayers == count;
-  return Expanded(
-  child: GestureDetector(
-  onTap: () => setState(() => _maxPlayers = count),
-  child: Container(
-  padding: const EdgeInsets.symmetric(vertical: 15),
-  decoration: BoxDecoration(
-  color: isSelected ? Colors.purple : Colors.transparent,
-  borderRadius: BorderRadius.circular(12),
-  ),
-  child: Text(
-  '$count',
-  textAlign: TextAlign.center,
-  style: TextStyle(
-  color: isSelected ? Colors.white : Colors.black,
-  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-  ),
-  ),
-  ),
-  ),
-  );
-  }).toList(),
-  ),
-  );
-}
+  Widget _buildRoundsSelector() {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Row(
+        children: [1, 2, 3, 4, 5].map((rounds) {
+          final isSelected = _totalRounds == rounds;
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => setState(() => _totalRounds = rounds),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 15),
+                decoration: BoxDecoration(
+                  color: isSelected ? Colors.purple : Colors.transparent,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '$rounds',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: isSelected ? Colors.white : Colors.black,
+                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
 
-Widget _buildRoundsSelector() {
-  return Container(
-    decoration: BoxDecoration(
-      color: Colors.grey.shade50,
-      borderRadius: BorderRadius.circular(15),
-      border: Border.all(color: Colors.grey.shade300),
-    ),
-    child: Row(
-      children: [1, 2, 3, 4, 5].map((rounds) {
-        final isSelected = _totalRounds == rounds;
-        return Expanded(
-          child: GestureDetector(
-            onTap: () => setState(() => _totalRounds = rounds),
+  Widget _buildDurationSelector() {
+    final durations = [
+      {'seconds': 180, 'label': '3 دقائق'},
+      {'seconds': 300, 'label': '5 دقائق'},
+      {'seconds': 420, 'label': '7 دقائق'},
+      {'seconds': 600, 'label': '10 دقائق'},
+    ];
+
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.grey.shade50,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        children: durations.asMap().entries.map((entry) {
+          final index = entry.key;
+          final duration = entry.value;
+          final isSelected = _roundDuration == duration['seconds'];
+          final isFirst = index == 0;
+          final isLast = index == durations.length - 1;
+
+          return GestureDetector(
+            onTap: () => setState(() => _roundDuration = duration['seconds'] as int),
             child: Container(
-              padding: const EdgeInsets.symmetric(vertical: 15),
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 15, horizontal: 20),
               decoration: BoxDecoration(
                 color: isSelected ? Colors.purple : Colors.transparent,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.only(
+                  topLeft: isFirst ? const Radius.circular(12) : Radius.zero,
+                  topRight: isFirst ? const Radius.circular(12) : Radius.zero,
+                  bottomLeft: isLast ? const Radius.circular(12) : Radius.zero,
+                  bottomRight: isLast ? const Radius.circular(12) : Radius.zero,
+                ),
+                border: index > 0 ? Border(
+                    top: BorderSide(color: Colors.grey.shade300, width: 0.5)
+                ) : null,
               ),
               child: Text(
-                '$rounds',
+                duration['label'] as String,
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   color: isSelected ? Colors.white : Colors.black,
                   fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                  fontSize: 16,
                 ),
               ),
             ),
-          ),
-        );
-      }).toList(),
-    ),
-  );
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _roomNameController.dispose();
+    super.dispose();
+  }
 }
-
-Widget _buildDurationSelector() {
-  final durations = [
-    {'seconds': 180, 'label': '3 دقائق'},
-    {'seconds': 300, 'label': '5 دقائق'},
-    {'seconds': 420, 'label': '7 دقائق'},
-    {'seconds': 600, 'label': '10 دقائق'},
-  ];
-
-  return Container(
-      decoration: Box

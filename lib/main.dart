@@ -11,8 +11,8 @@ void main() async {
 
   // تهيئة Supabase
   await Supabase.initialize(
-    url: 'YOUR_SUPABASE_URL', // ضع رابط Supabase الخاص بك هنا
-    anonKey: 'YOUR_SUPABASE_ANON_KEY', // ضع مفتاح Supabase هنا
+    url: 'https://fikaujglqyffcszfjklh.supabase.co', // ضع رابط Supabase الخاص بك هنا
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpa2F1amdscXlmZmNzemZqa2xoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyODQzMDAsImV4cCI6MjA3MDg2MDMwMH0.dSKM0Wv4worp2d6gUs1sopArZcFV4BtAmGRXz_lZkMc', // ضع مفتاح Supabase هنا
   );
 
   runApp(const VoiceRoomsApp());
