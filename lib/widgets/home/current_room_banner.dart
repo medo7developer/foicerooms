@@ -1,19 +1,20 @@
-// lib/widgets/home/current_room_banner.dart
 import 'package:flutter/material.dart';
 import '../../services/supabase_service.dart';
 
 class CurrentRoomBanner extends StatelessWidget {
   final UserStatus userStatus;
-  final VoidCallback onRejoin;
+  final VoidCallback onRejoinRoom;
 
   const CurrentRoomBanner({
     super.key,
     required this.userStatus,
-    required this.onRejoin,
+    required this.onRejoinRoom,
   });
 
   @override
   Widget build(BuildContext context) {
+    if (!userStatus.inRoom) return const SizedBox();
+
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 20),
       padding: const EdgeInsets.all(15),
@@ -45,7 +46,7 @@ class CurrentRoomBanner extends StatelessWidget {
             ),
           ),
           TextButton(
-            onPressed: onRejoin,
+            onPressed: onRejoinRoom,
             child: const Text('العودة', style: TextStyle(color: Colors.orange)),
           ),
         ],

@@ -4,14 +4,14 @@ class PlayerNameSection extends StatelessWidget {
   final TextEditingController controller;
   final String? savedPlayerName;
   final bool isInRoom;
-  final Function(String) onChanged;
+  final ValueChanged<String> onNameChanged;
 
   const PlayerNameSection({
     super.key,
     required this.controller,
-    required this.savedPlayerName,
+    this.savedPlayerName,
     required this.isInRoom,
-    required this.onChanged,
+    required this.onNameChanged,
   });
 
   @override
@@ -68,7 +68,7 @@ class PlayerNameSection extends StatelessWidget {
           const SizedBox(height: 15),
           TextField(
             controller: controller,
-            enabled: !isInRoom,
+            enabled: !isInRoom, // منع التعديل إذا كان في غرفة
             decoration: InputDecoration(
               hintText: 'أدخل اسمك هنا',
               prefixIcon: const Icon(Icons.edit, color: Color(0xFF667eea)),
@@ -84,11 +84,7 @@ class PlayerNameSection extends StatelessWidget {
             ),
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-            onChanged: (value) {
-              if (value.isNotEmpty && !isInRoom) {
-                onChanged(value);
-              }
-            },
+            onChanged: onNameChanged,
           ),
         ],
       ),

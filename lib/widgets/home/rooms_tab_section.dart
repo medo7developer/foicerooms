@@ -1,19 +1,22 @@
 import 'package:flutter/material.dart';
-import '../../providers/game_provider.dart';
 
 class RoomsTabSection extends StatelessWidget {
   final TabController tabController;
-  final List<GameRoom> availableRooms;
-  final List<GameRoom> myRooms;
+  final int availableRoomsCount;
+  final int myRoomsCount;
   final AnimationController refreshController;
+  final int totalConnectedUsers;
+  final int totalActiveRooms;
   final VoidCallback onRefresh;
 
   const RoomsTabSection({
     super.key,
     required this.tabController,
-    required this.availableRooms,
-    required this.myRooms,
+    required this.availableRoomsCount,
+    required this.myRoomsCount,
     required this.refreshController,
+    required this.totalConnectedUsers,
+    required this.totalActiveRooms,
     required this.onRefresh,
   });
 
@@ -43,7 +46,7 @@ class RoomsTabSection extends StatelessWidget {
                   children: [
                     const Icon(Icons.public),
                     const SizedBox(width: 8),
-                    Text('الغرف العامة (${availableRooms.length})'),
+                    Text('الغرف العامة ($availableRoomsCount)'),
                   ],
                 ),
               ),
@@ -53,7 +56,7 @@ class RoomsTabSection extends StatelessWidget {
                   children: [
                     const Icon(Icons.person),
                     const SizedBox(width: 8),
-                    Text('غرفي (${myRooms.length})'),
+                    Text('غرفي ($myRoomsCount)'),
                   ],
                 ),
               ),
@@ -71,18 +74,8 @@ class RoomsTabSection extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               _buildRefreshButton(),
-              _buildStatsCard(
-                  'المتصلون',
-                  '${availableRooms.fold(0, (sum, room) => sum + room.players.length)}',
-                  Icons.people,
-                  Colors.green
-              ),
-              _buildStatsCard(
-                  'الغرف النشطة',
-                  '${availableRooms.length + myRooms.length}',
-                  Icons.meeting_room,
-                  Colors.blue
-              ),
+              _buildStatsCard('المتصلون', '$totalConnectedUsers', Icons.people, Colors.green),
+              _buildStatsCard('الغرف النشطة', '$totalActiveRooms', Icons.meeting_room, Colors.blue),
             ],
           ),
           const SizedBox(height: 10),
@@ -105,9 +98,9 @@ class RoomsTabSection extends StatelessWidget {
             ),
             child: Transform.rotate(
               angle: refreshController.value * 2 * 3.14159,
-              child: const Icon(
+              child: Icon(
                 Icons.refresh,
-                color: Color(0xFF667eea),
+                color: const Color(0xFF667eea),
                 size: 24,
               ),
             ),
