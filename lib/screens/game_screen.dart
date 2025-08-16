@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'dart:async';
 import '../providers/game_provider.dart';
+import '../services/realtime_manager.dart';
 import '../services/webrtc_service.dart';
 import '../services/supabase_service.dart';
 
@@ -19,15 +20,19 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   late SupabaseService _supabaseService;
   late AnimationController _pulseController;
   late AnimationController _cardController;
+  late RealtimeManager _realtimeManager; // إضافة جديدة
   Timer? _timer;
   bool _isMicrophoneOn = true;
   bool _isConnecting = true;
+  bool _isRealtimeConnected = false;
+  Timer? _connectionTimer;
 
   @override
   void initState() {
     super.initState();
     _webrtcService = context.read<WebRTCService>();
     _supabaseService = context.read<SupabaseService>();
+    _realtimeManager = context.read<RealtimeManager>();
 
     _pulseController = AnimationController(
       duration: const Duration(milliseconds: 1500),
@@ -45,11 +50,29 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   Future<void> _initializeGame() async {
     try {
       await _webrtcService.initializeLocalAudio();
+
+      // تسجيل GameProvider مع RealtimeManager وحقن التبعيات
+      final gameProvider = context.read<GameProvider>();
+      gameProvider.setSupabaseService(_supabaseService);
+      _realtimeManager.registerGameProvider(gameProvider);
+
+      // بدء الاستماع للتحديثات المباشرة
+      final currentRoom = gameProvider.currentRoom;
+      if (currentRoom != null) {
+        await _realtimeManager.subscribeToRoom(currentRoom.id, widget.playerId);
+        setState(() => _isRealtimeConnected = true);
+      }
+
       setState(() => _isConnecting = false);
 
-      // بدء المؤقت لتحديث الوقت المتبقي
+      // بدء مؤقت التحديث والاتصال
       _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
         if (mounted) setState(() {});
+      });
+
+      // مؤقت للتحقق من الاتصال
+      _connectionTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+        _checkConnectionAndRefresh();
       });
 
     } catch (e) {
@@ -60,11 +83,71 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     }
   }
 
-  void _toggleMicrophone() {
-    _webrtcService.toggleMicrophone();
-    setState(() => _isMicrophoneOn = _webrtcService.isMicrophoneEnabled);
+  // فحص الاتصال والتحديث
+  void _checkConnectionAndRefresh() {
+    final gameProvider = context.read<GameProvider>();
+    if (gameProvider.currentRoom != null) {
+      // تحديث حالة الاتصال للاعب الحالي
+      gameProvider.updateConnectionStatus(widget.playerId, true);
+
+      // تحديث يدوي إذا لزم الأمر
+      _realtimeManager.forceRefresh();
+    }
   }
 
+  // تحسين شريط المعلومات العلوي
+  Widget _buildTopBar(GameRoom room, Player currentPlayer) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      child: Row(
+        children: [
+          IconButton(
+            onPressed: _leaveGame,
+            icon: const Icon(Icons.exit_to_app, color: Colors.white),
+          ),
+          Expanded(
+            child: Column(
+              children: [
+                Text(
+                  room.name,
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      _getStatusText(room.state),
+                      style: const TextStyle(
+                        fontSize: 14,
+                        color: Colors.white70,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    // مؤشر الاتصال
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: _isRealtimeConnected ? Colors.green : Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          _buildTimerWidget(room),
+        ],
+      ),
+    );
+  }
+
+  // تحديث دالة التصويت لاستخدام الخادم
   Future<void> _votePlayer(Player player) async {
     final gameProvider = context.read<GameProvider>();
     final currentRoom = gameProvider.currentRoom;
@@ -92,9 +175,32 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     );
 
     if (confirmed == true) {
-      await _supabaseService.updateVote(widget.playerId, player.id);
-      gameProvider.votePlayer(widget.playerId, player.id);
+      // استخدام التصويت مع المزامنة
+      final success = await gameProvider.votePlayerWithServer(player.id);
+      if (!success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('فشل في تسجيل الصوت'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _pulseController.dispose();
+    _cardController.dispose();
+    _webrtcService.dispose();
+    _realtimeManager.dispose(); // إضافة جديدة
+    super.dispose();
+  }
+
+  void _toggleMicrophone() {
+    _webrtcService.toggleMicrophone();
+    setState(() => _isMicrophoneOn = _webrtcService.isMicrophoneEnabled);
   }
 
   void _leaveGame() {
@@ -232,42 +338,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildTopBar(GameRoom room, Player currentPlayer) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      child: Row(
-        children: [
-          IconButton(
-            onPressed: _leaveGame,
-            icon: const Icon(Icons.exit_to_app, color: Colors.white),
-          ),
-          Expanded(
-            child: Column(
-              children: [
-                Text(
-                  room.name,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                  ),
-                ),
-                Text(
-                  _getStatusText(room.state),
-                  style: const TextStyle(
-                    fontSize: 14,
-                    color: Colors.white70,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          _buildTimerWidget(room),
-        ],
-      ),
-    );
-  }
-
   Widget _buildTimerWidget(GameRoom room) {
     final remainingTime = Provider.of<GameProvider>(context).remainingTime;
 
@@ -308,7 +378,14 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     }
   }
 
+  // تحديث _buildWaitingContent لاستخدام بدء اللعبة مع الخادم
   Widget _buildWaitingContent(GameRoom room) {
+    final gameProvider = context.watch<GameProvider>();
+    final canStart = gameProvider.canStartGame();
+    final isCreator = gameProvider.isCurrentPlayerCreator;
+    final hasEnoughPlayers = gameProvider.hasEnoughPlayers;
+    final connectedCount = gameProvider.connectedPlayersCount;
+
     return Center(
       child: Container(
         margin: const EdgeInsets.all(20),
@@ -342,35 +419,269 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             ),
             const SizedBox(height: 10),
             Text(
-              '${room.players.length}/${room.maxPlayers} لاعبين',
-              style: const TextStyle(
+              '$connectedCount/${room.maxPlayers} لاعبين',
+              style: TextStyle(
                 fontSize: 18,
-                color: Colors.grey,
+                color: hasEnoughPlayers ? Colors.green : Colors.orange,
+                fontWeight: FontWeight.bold,
               ),
             ),
+
+            // إضافة مؤشر الحالة
+            const SizedBox(height: 15),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: hasEnoughPlayers ? Colors.green.withOpacity(0.1) : Colors.orange.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: Text(
+                hasEnoughPlayers
+                    ? '✓ العدد كافي لبدء اللعبة'
+                    : 'نحتاج ${gameProvider.minimumPlayersRequired - connectedCount} لاعبين إضافيين على الأقل',
+                style: TextStyle(
+                  color: hasEnoughPlayers ? Colors.green : Colors.orange,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+
             const SizedBox(height: 20),
+
+            // قائمة اللاعبين مع مؤشرات الاتصال المحسنة
             ...room.players.map((player) => Container(
               margin: const EdgeInsets.symmetric(vertical: 5),
               padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: Colors.blue.shade50,
+                color: player.isConnected ? Colors.blue.shade50 : Colors.grey.shade100,
                 borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: player.isConnected ? Colors.blue : Colors.grey,
+                  width: player.id == widget.playerId ? 2 : 1,
+                ),
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.person, color: Colors.blue),
+                  CircleAvatar(
+                    radius: 16,
+                    backgroundColor: player.isConnected ? Colors.blue : Colors.grey,
+                    child: Text(
+                      player.name[0].toUpperCase(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
                   const SizedBox(width: 10),
-                  Text(
-                    player.name,
-                    style: const TextStyle(fontWeight: FontWeight.w500),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              player.name,
+                              style: TextStyle(
+                                fontWeight: FontWeight.w500,
+                                color: player.isConnected ? Colors.black87 : Colors.grey,
+                              ),
+                            ),
+                            if (player.id == widget.playerId) ...[
+                              const SizedBox(width: 5),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: Colors.green,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: const Text(
+                                  'أنت',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                        Text(
+                          player.isConnected ? 'متصل' : 'غير متصل',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: player.isConnected ? Colors.green : Colors.red,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                   if (player.id == room.creatorId) ...[
-                    const Spacer(),
                     const Icon(Icons.star, color: Colors.amber, size: 20),
+                  ],
+                  if (player.isConnected) ...[
+                    const SizedBox(width: 10),
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Colors.green,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
                   ],
                 ],
               ),
             )).toList(),
+
+            // زر بدء اللعبة المحسن للمنشئ
+            if (isCreator) ...[
+              const SizedBox(height: 25),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: canStart ? () async {
+                    // تأكيد بدء اللعبة
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: const Text('بدء اللعبة'),
+                        content: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text('هل تريد بدء اللعبة مع $connectedCount لاعبين؟'),
+                            const SizedBox(height: 10),
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.withOpacity(0.1),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: const Text(
+                                'سيتم اختيار جاسوس عشوائياً من بين اللاعبين',
+                                style: TextStyle(fontSize: 12),
+                                textAlign: TextAlign.center,
+                              ),
+                            ),
+                          ],
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('إلغاء'),
+                          ),
+                          ElevatedButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green,
+                            ),
+                            child: const Text('بدء اللعبة',
+                                style: TextStyle(color: Colors.white)),
+                          ),
+                        ],
+                      ),
+                    );
+
+                    if (confirmed == true) {
+                      // إظهار مؤشر التحميل
+                      showDialog(
+                        context: context,
+                        barrierDismissible: false,
+                        builder: (context) => const AlertDialog(
+                          content: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CircularProgressIndicator(),
+                              SizedBox(height: 15),
+                              Text('جاري بدء اللعبة...'),
+                            ],
+                          ),
+                        ),
+                      );
+
+                      // بدء اللعبة مع الخادم
+                      final success = await gameProvider.startGameWithServer();
+
+                      // إغلاق مؤشر التحميل
+                      Navigator.pop(context);
+
+                      if (!success) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('فشل في بدء اللعبة، يرجى المحاولة مرة أخرى'),
+                            backgroundColor: Colors.red,
+                          ),
+                        );
+                      }
+                    }
+                  } : null,
+                  icon: Icon(
+                    canStart ? Icons.play_arrow : Icons.lock,
+                    color: Colors.white,
+                  ),
+                  label: Text(
+                    canStart ? 'بدء اللعبة' : 'نحتاج المزيد من اللاعبين',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: canStart ? Colors.green : Colors.grey,
+                    padding: const EdgeInsets.symmetric(vertical: 15),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ),
+            ] else ...[
+              // رسالة محسنة للاعبين العاديين
+              const SizedBox(height: 25),
+              Container(
+                padding: const EdgeInsets.all(15),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.blue.withOpacity(0.3)),
+                ),
+                child: Column(
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.info, color: Colors.blue),
+                        SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            'في انتظار مالك الغرفة لبدء اللعبة...',
+                            style: TextStyle(
+                              color: Colors.blue,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (hasEnoughPlayers) ...[
+                      const SizedBox(height: 5),
+                      Text(
+                        'العدد كافي، يمكن البدء في أي وقت!',
+                        style: TextStyle(
+                          color: Colors.green.shade700,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -800,14 +1111,5 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       case GameState.finished:
         return 'انتهت اللعبة';
     }
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _pulseController.dispose();
-    _cardController.dispose();
-    _webrtcService.dispose();
-    super.dispose();
   }
 }

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../services/supabase_service.dart';
+
 enum GameState { waiting, playing, voting, finished }
 enum PlayerRole { normal, spy }
 
@@ -103,6 +105,7 @@ class GameProvider extends ChangeNotifier {
   GameRoom? _currentRoom;
   Player? _currentPlayer;
   List<GameRoom> _availableRooms = [];
+  SupabaseService? _supabaseService;
 
   // كلمات اللعبة
   final List<String> _gameWords = [
@@ -118,6 +121,8 @@ class GameProvider extends ChangeNotifier {
   GameRoom? get currentRoom => _currentRoom;
   Player? get currentPlayer => _currentPlayer;
   List<GameRoom> get availableRooms => _availableRooms;
+  GameState? _lastKnownState;
+  int _lastPlayersCount = 0;
 
   // إنشاء غرفة جديدة مع إضافة المنشئ
   GameRoom createRoom({
@@ -153,7 +158,54 @@ class GameProvider extends ChangeNotifier {
     return room;
   }
 
-  // الانضمام لغرفة مع التحقق الآمن
+  // تحسين دالة التحديث من Realtime
+  void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
+    try {
+      final oldState = _currentRoom?.state;
+      final oldPlayersCount = _currentRoom?.players.length ?? 0;
+
+      _currentRoom = updatedRoom;
+
+      // تحديث اللاعب الحالي
+      final currentPlayerIndex = updatedRoom.players.indexWhere((p) => p.id == playerId);
+      if (currentPlayerIndex != -1) {
+        _currentPlayer = updatedRoom.players[currentPlayerIndex];
+      }
+
+      // تسجيل التغييرات المهمة
+      if (oldState != updatedRoom.state) {
+        debugPrint('تغيير حالة الغرفة من $oldState إلى ${updatedRoom.state}');
+        _lastKnownState = updatedRoom.state;
+      }
+
+      if (oldPlayersCount != updatedRoom.players.length) {
+        debugPrint('تغيير عدد اللاعبين من $oldPlayersCount إلى ${updatedRoom.players.length}');
+        _lastPlayersCount = updatedRoom.players.length;
+      }
+
+      // إشعار جميع المستمعين بالتحديث
+      notifyListeners();
+
+      debugPrint('تم تحديث الغرفة من الخادم: ${updatedRoom.state} - ${updatedRoom.players.length} لاعبين');
+    } catch (e) {
+      debugPrint('خطأ في تحديث الغرفة من الخادم: $e');
+    }
+  }
+
+  void setSupabaseService(SupabaseService service) {
+    _supabaseService = service;
+  }
+
+  // إضافة دالة للتحقق من التغييرات
+  bool hasStateChanged() {
+    return _lastKnownState != _currentRoom?.state;
+  }
+
+  bool hasPlayersCountChanged() {
+    return _lastPlayersCount != (_currentRoom?.players.length ?? 0);
+  }
+
+  // تحسين دالة الانضمام للغرفة مع إشعار فوري
   bool joinRoom(String roomId, String playerId, String playerName) {
     try {
       // البحث عن الغرفة بأمان
@@ -196,13 +248,15 @@ class GameProvider extends ChangeNotifier {
 
       _currentRoom = targetRoom;
       _currentPlayer = targetRoom.players.firstWhere((p) => p.id == playerId);
+      _lastPlayersCount = targetRoom.players.length;
 
-      // بدء اللعبة إذا اكتمل العدد والغرفة في حالة الانتظار
-      if (targetRoom.players.length == targetRoom.maxPlayers && targetRoom.state == GameState.waiting) {
-        _startGame();
-      }
-
+      // إشعار فوري بالتحديث
       notifyListeners();
+
+      // التحقق من إمكانية بدء اللعبة
+      _checkAutoStart(targetRoom, playerId);
+
+      debugPrint('تم الانضمام بنجاح - عدد اللاعبين الحالي: ${targetRoom.players.length}');
       return true;
     } catch (e) {
       debugPrint('خطأ في الانضمام للغرفة: $e');
@@ -210,10 +264,12 @@ class GameProvider extends ChangeNotifier {
     }
   }
 
-  // إعادة الانضمام لغرفة موجودة
+  // تحسين دالة إعادة الانضمام
   void rejoinRoom(GameRoom room, String playerId) {
     try {
       _currentRoom = room;
+      _lastKnownState = room.state;
+      _lastPlayersCount = room.players.length;
 
       // البحث عن اللاعب الحالي بأمان
       Player? currentPlayer;
@@ -225,10 +281,135 @@ class GameProvider extends ChangeNotifier {
       }
 
       _currentPlayer = currentPlayer;
+
+      // إشعار فوري
       notifyListeners();
+
+      debugPrint('تم إعادة الانضمام للغرفة: ${room.name} - الحالة: ${room.state}');
     } catch (e) {
       debugPrint('خطأ في إعادة الانضمام للغرفة: $e');
     }
+  }
+
+  // إضافة دالة للحصول على معلومات التحديث الأخير
+  Map<String, dynamic> get lastUpdateInfo => {
+    'roomId': _currentRoom?.id,
+    'state': _currentRoom?.state.toString(),
+    'playersCount': _currentRoom?.players.length ?? 0,
+    'connectedCount': connectedPlayersCount,
+    'lastStateChange': _lastKnownState.toString(),
+    'timestamp': DateTime.now().toIso8601String(),
+  };
+
+  // إضافة دالة لفرض التحديث
+  void forceUpdate() {
+    debugPrint('فرض تحديث واجهة المستخدم');
+    notifyListeners();
+  }
+
+  // تحسين دالة التحقق من إمكانية بدء اللعبة
+  void _checkAutoStart(GameRoom room, String playerId) {
+    final connectedPlayers = room.players.where((p) => p.isConnected).length;
+    final canAutoStart = connectedPlayers >= room.maxPlayers &&
+        room.state == GameState.waiting;
+
+    if (canAutoStart) {
+      debugPrint('اكتمل العدد المطلوب (${connectedPlayers}/${room.maxPlayers}) - يمكن بدء اللعبة');
+
+      // إشعار بإمكانية البدء
+      if (room.creatorId == playerId) {
+        debugPrint('المنشئ متصل - يمكن بدء اللعبة');
+      }
+
+      // إشعار فوري بالتغيير
+      notifyListeners();
+    }
+  }
+
+  // دالة لمراقبة حالة الاتصال
+  void updateConnectionStatus(String playerId, bool isConnected) {
+    if (_currentRoom == null) return;
+
+    try {
+      final playerIndex = _currentRoom!.players.indexWhere((p) => p.id == playerId);
+      if (playerIndex != -1) {
+        _currentRoom!.players[playerIndex] = _currentRoom!.players[playerIndex].copyWith(
+            isConnected: isConnected
+        );
+
+        if (_currentPlayer?.id == playerId) {
+          _currentPlayer = _currentRoom!.players[playerIndex];
+        }
+
+        debugPrint('تحديث حالة الاتصال للاعب $playerId: $isConnected');
+        notifyListeners();
+      }
+    } catch (e) {
+      debugPrint('خطأ في تحديث حالة الاتصال: $e');
+    }
+  }
+
+  // دالة للحصول على إحصائيات مفصلة
+  @override
+  Map<String, dynamic> get enhancedGameStats => {
+    'totalPlayers': _currentRoom?.players.length ?? 0,
+    'connectedPlayers': connectedPlayersCount,
+    'disconnectedPlayers': (_currentRoom?.players.length ?? 0) - connectedPlayersCount,
+    'currentRound': _currentRoom?.currentRound ?? 0,
+    'totalRounds': _currentRoom?.totalRounds ?? 0,
+    'gameState': _currentRoom?.state.toString() ?? 'unknown',
+    'isPlayerSpy': isCurrentPlayerSpy,
+    'isCreator': isCurrentPlayerCreator,
+    'canStart': canStartGame(),
+    'roomId': _currentRoom?.id,
+    'playerId': _currentPlayer?.id,
+    'lastUpdate': DateTime.now().millisecondsSinceEpoch,
+    'stateChanged': hasStateChanged(),
+    'playersChanged': hasPlayersCountChanged(),
+  };
+
+  // دالة جديدة للمنشئ لبدء اللعبة يدوياً
+  bool canStartGame() {
+    if (_currentRoom == null || _currentPlayer == null) return false;
+
+    // التحقق من أن اللاعب الحالي هو المنشئ
+    if (_currentRoom!.creatorId != _currentPlayer!.id) return false;
+
+    // التحقق من حالة الغرفة
+    if (_currentRoom!.state != GameState.waiting) return false;
+
+    // التحقق من العدد الأدنى للاعبين
+    final connectedPlayers = _currentRoom!.players.where((p) => p.isConnected).length;
+    return connectedPlayers >= 3; // الحد الأدنى 3 لاعبين
+  }
+
+  // تحسين دالة بدء اللعبة
+  bool startGameManually() {
+    if (!canStartGame()) {
+      debugPrint('لا يمكن بدء اللعبة - شروط غير مكتملة');
+      return false;
+    }
+
+    _startGame();
+    return true;
+  }
+
+  // إضافة getter لمعرفة ما إذا كان اللاعب الحالي هو المنشئ
+  bool get isCurrentPlayerCreator {
+    return _currentRoom?.creatorId == _currentPlayer?.id;
+  }
+
+  // إضافة getter لعدد اللاعبين المتصلين
+  int get connectedPlayersCount {
+    return _currentRoom?.players.where((p) => p.isConnected).length ?? 0;
+  }
+
+  // إضافة getter للحد الأدنى المطلوب
+  int get minimumPlayersRequired => 3;
+
+  // إضافة getter لمعرفة ما إذا كان العدد كافياً
+  bool get hasEnoughPlayers {
+    return connectedPlayersCount >= minimumPlayersRequired;
   }
 
   // بدء اللعبة مع التحقق من الأمان
@@ -491,9 +672,6 @@ class GameProvider extends ChangeNotifier {
   // التحقق من كون اللاعب جاسوساً
   bool get isCurrentPlayerSpy => _currentPlayer?.role == PlayerRole.spy;
 
-  // الحصول على عدد اللاعبين المتصلين
-  int get connectedPlayersCount => _currentRoom?.players.where((p) => p.isConnected).length ?? 0;
-
   // الحصول على معلومات إحصائية
   Map<String, dynamic> get gameStats => {
     'totalPlayers': _currentRoom?.players.length ?? 0,
@@ -503,6 +681,85 @@ class GameProvider extends ChangeNotifier {
     'gameState': _currentRoom?.state.toString() ?? 'unknown',
     'isPlayerSpy': isCurrentPlayerSpy,
   };
+
+  // دالة لبدء اللعبة مع المزامنة مع الخادم
+  Future<bool> startGameWithServer() async {
+    if (_currentRoom == null || _currentPlayer == null) return false;
+
+    try {
+      final supabaseService = SupabaseService(); // يجب حقنه بدلاً من إنشاء instance جديد
+      final success = await supabaseService.startGameByCreator(
+          _currentRoom!.id,
+          _currentPlayer!.id
+      );
+
+      if (success) {
+        debugPrint('تم بدء اللعبة على الخادم');
+        // التحديثات ستأتي من realtime
+        return true;
+      } else {
+        debugPrint('فشل في بدء اللعبة على الخادم');
+        return false;
+      }
+    } catch (e) {
+      debugPrint('خطأ في بدء اللعبة على الخادم: $e');
+      return false;
+    }
+  }
+
+  // دالة لمزامنة التصويت مع الخادم
+  Future<bool> votePlayerWithServer(String targetId) async {
+    if (_currentRoom == null ||
+        _currentPlayer == null ||
+        _currentRoom!.state != GameState.voting ||
+        _currentPlayer!.isVoted) {
+      return false;
+    }
+
+    try {
+      final supabaseService = SupabaseService(); // يجب حقنه
+      await supabaseService.updateVote(_currentPlayer!.id, targetId);
+
+      debugPrint('تم تسجيل الصوت على الخادم');
+      // التحديثات ستأتي من realtime
+      return true;
+    } catch (e) {
+      debugPrint('خطأ في التصويت على الخادم: $e');
+      return false;
+    }
+  }
+
+  // دالة للتحقق من حالة الاتصال بالخادم
+  bool get isConnectedToServer => _currentRoom != null && _currentPlayer != null;
+
+  // دالة لإعادة تعيين كل شيء (للاستخدام عند الأخطاء)
+  void resetAll() {
+    _currentRoom = null;
+    _currentPlayer = null;
+    _availableRooms.clear();
+    notifyListeners();
+    debugPrint('تم إعادة تعيين جميع بيانات اللعبة');
+  }
+
+  // دالة للتحقق من صحة البيانات
+  bool validateGameState() {
+    if (_currentRoom == null) {
+      debugPrint('خطأ: لا توجد غرفة حالية');
+      return false;
+    }
+
+    if (_currentPlayer == null) {
+      debugPrint('خطأ: لا يوجد لاعب حالي');
+      return false;
+    }
+
+    if (!_currentRoom!.players.any((p) => p.id == _currentPlayer!.id)) {
+      debugPrint('خطأ: اللاعب الحالي غير موجود في قائمة اللاعبين');
+      return false;
+    }
+
+    return true;
+  }
 
   // تنظيف الموارد
   @override
