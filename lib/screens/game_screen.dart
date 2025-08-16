@@ -47,6 +47,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     _initializeGame();
   }
 
+// استبدال دالة _initializeGame:
   Future<void> _initializeGame() async {
     try {
       await _webrtcService.initializeLocalAudio();
@@ -61,6 +62,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       if (currentRoom != null) {
         await _realtimeManager.subscribeToRoom(currentRoom.id, widget.playerId);
         setState(() => _isRealtimeConnected = true);
+
+        // تحديث فوري أول مرة
+        await _realtimeManager.forceRefresh();
       }
 
       setState(() => _isConnecting = false);
@@ -70,8 +74,8 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         if (mounted) setState(() {});
       });
 
-      // مؤقت للتحقق من الاتصال
-      _connectionTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      // مؤقت للتحقق من الاتصال - تقليل التكرار
+      _connectionTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
         _checkConnectionAndRefresh();
       });
 

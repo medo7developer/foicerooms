@@ -7,7 +7,9 @@ import '../providers/game_provider.dart';
 
 class RealtimeManager {
   static final RealtimeManager _instance = RealtimeManager._internal();
+
   factory RealtimeManager() => _instance;
+
   RealtimeManager._internal();
 
   final SupabaseClient _client = Supabase.instance.client;
@@ -17,6 +19,9 @@ class RealtimeManager {
   String? _currentRoomId;
   String? _currentPlayerId;
   Timer? _refreshTimer;
+
+// إضافة هذه الدالة في نهاية الكلاس:
+  bool get isConnected => _roomChannel != null;
 
   // تسجيل GameProvider للتحديثات
   void registerGameProvider(GameProvider gameProvider) {
@@ -48,7 +53,8 @@ class RealtimeManager {
           value: roomId,
         ),
         callback: (payload) {
-          log('تحديث في الغرفة: ${payload.eventType} - ${payload.newRecord?['state']}');
+          log('تحديث في الغرفة: ${payload.eventType} - ${payload
+              .newRecord?['state']}');
           _handleRoomUpdate(payload);
         },
       );
@@ -64,7 +70,8 @@ class RealtimeManager {
           value: roomId,
         ),
         callback: (payload) {
-          log('تحديث في اللاعبين: ${payload.eventType} - ${payload.newRecord?['name'] ?? payload.oldRecord?['name']}');
+          log('تحديث في اللاعبين: ${payload.eventType} - ${payload
+              .newRecord?['name'] ?? payload.oldRecord?['name']}');
           _handlePlayersUpdate(payload);
         },
       );
@@ -78,78 +85,58 @@ class RealtimeManager {
 
       // تشغيل مؤقت للتحديث الدوري كخطة احتياطية
       _startPeriodicRefresh();
-
     } catch (e) {
       log('خطأ في الاستماع للغرفة: $e');
     }
   }
 
-  // تشغيل التحديث الدوري
+// تحديث التكرار ليكون أكثر تكراراً:
   void _startPeriodicRefresh() {
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+    _refreshTimer = Timer.periodic(
+        const Duration(seconds: 2), (timer) { // تم تغيير من 3 إلى 2 ثانية
       if (_currentRoomId != null) {
         _refreshRoomData();
       }
     });
   }
 
-  // معالجة تحديث الغرفة
+// تحديث دالة _handleRoomUpdate:
   void _handleRoomUpdate(PostgresChangePayload payload) {
     try {
       log('معالجة تحديث الغرفة: ${payload.eventType}');
 
       // تحديث فوري للبيانات
-      Future.delayed(const Duration(milliseconds: 500), () {
+      _refreshRoomData();
+
+      // تحديث إضافي بعد تأخير قصير
+      Future.delayed(const Duration(milliseconds: 300), () {
         _refreshRoomData();
       });
-
     } catch (e) {
       log('خطأ في معالجة تحديث الغرفة: $e');
     }
   }
 
-  // معالجة تحديث اللاعبين
+// تحديث دالة _handlePlayersUpdate:
   void _handlePlayersUpdate(PostgresChangePayload payload) {
     try {
       final eventType = payload.eventType;
       log('معالجة تحديث اللاعبين: $eventType');
 
-      switch (eventType) {
-        case PostgresChangeEvent.insert:
-          final newPlayer = payload.newRecord;
-          if (newPlayer != null) {
-            log('انضمام لاعب جديد: ${newPlayer['name']}');
-          }
-          break;
-        case PostgresChangeEvent.update:
-          final updatedPlayer = payload.newRecord;
-          if (updatedPlayer != null) {
-            log('تحديث لاعب: ${updatedPlayer['name']} - متصل: ${updatedPlayer['is_connected']}');
-          }
-          break;
-        case PostgresChangeEvent.delete:
-          final deletedPlayer = payload.oldRecord;
-          if (deletedPlayer != null) {
-            log('مغادرة لاعب: ${deletedPlayer['name']}');
-          }
-          break;
-        case PostgresChangeEvent.all:
-          // TODO: Handle this case.
-          throw UnimplementedError();
-      }
-
       // تحديث فوري للبيانات
+      _refreshRoomData();
+
+      // تحديث إضافي بعد تأخير قصير
       Future.delayed(const Duration(milliseconds: 200), () {
         _refreshRoomData();
       });
-
     } catch (e) {
       log('خطأ في معالجة تحديث اللاعبين: $e');
     }
   }
 
-  // إعادة تحميل بيانات الغرفة من الخادم
+// في دالة _refreshRoomData، استبدال المحاولة الكاملة:
   Future<void> _refreshRoomData() async {
     if (_currentRoomId == null || _gameProvider == null) return;
 
@@ -158,7 +145,7 @@ class RealtimeManager {
           .from('rooms')
           .select('*, players(*)')
           .eq('id', _currentRoomId!)
-          .order('created_at', referencedTable: 'players')
+          .order('id', referencedTable: 'players') // تم التعديل هنا
           .maybeSingle();
 
       if (response == null) {
@@ -169,7 +156,8 @@ class RealtimeManager {
       // تحويل البيانات وتحديث GameProvider
       final updatedRoom = _convertToGameRoom(response);
       if (updatedRoom != null && _currentPlayerId != null) {
-        log('تحديث بيانات الغرفة: ${updatedRoom.state} - عدد اللاعبين: ${updatedRoom.players.length}');
+        log('تحديث بيانات الغرفة: ${updatedRoom
+            .state} - عدد اللاعبين: ${updatedRoom.players.length}');
         _gameProvider!.updateRoomFromRealtime(updatedRoom, _currentPlayerId!);
       }
     } catch (e) {
@@ -277,5 +265,12 @@ class RealtimeManager {
   Future<void> forceRefresh() async {
     log('تحديث يدوي للبيانات');
     await _refreshRoomData();
+  }
+
+  void checkConnection() {
+    if (!isConnected && _currentRoomId != null && _currentPlayerId != null) {
+      log('إعادة الاتصال بالغرفة $_currentRoomId');
+      subscribeToRoom(_currentRoomId!, _currentPlayerId!);
+    }
   }
 }

@@ -158,40 +158,6 @@ class GameProvider extends ChangeNotifier {
     return room;
   }
 
-  // تحسين دالة التحديث من Realtime
-  void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
-    try {
-      final oldState = _currentRoom?.state;
-      final oldPlayersCount = _currentRoom?.players.length ?? 0;
-
-      _currentRoom = updatedRoom;
-
-      // تحديث اللاعب الحالي
-      final currentPlayerIndex = updatedRoom.players.indexWhere((p) => p.id == playerId);
-      if (currentPlayerIndex != -1) {
-        _currentPlayer = updatedRoom.players[currentPlayerIndex];
-      }
-
-      // تسجيل التغييرات المهمة
-      if (oldState != updatedRoom.state) {
-        debugPrint('تغيير حالة الغرفة من $oldState إلى ${updatedRoom.state}');
-        _lastKnownState = updatedRoom.state;
-      }
-
-      if (oldPlayersCount != updatedRoom.players.length) {
-        debugPrint('تغيير عدد اللاعبين من $oldPlayersCount إلى ${updatedRoom.players.length}');
-        _lastPlayersCount = updatedRoom.players.length;
-      }
-
-      // إشعار جميع المستمعين بالتحديث
-      notifyListeners();
-
-      debugPrint('تم تحديث الغرفة من الخادم: ${updatedRoom.state} - ${updatedRoom.players.length} لاعبين');
-    } catch (e) {
-      debugPrint('خطأ في تحديث الغرفة من الخادم: $e');
-    }
-  }
-
   void setSupabaseService(SupabaseService service) {
     _supabaseService = service;
   }
@@ -759,6 +725,53 @@ class GameProvider extends ChangeNotifier {
     }
 
     return true;
+  }
+
+  // إضافة دالة جديدة للتحديث المباشر:
+  void notifyRoomUpdate() {
+    notifyListeners();
+    debugPrint('تم إشعار المستمعين بتحديث الغرفة');
+  }
+
+// تحديث دالة updateRoomFromRealtime:
+  void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
+    try {
+      final oldState = _currentRoom?.state;
+      final oldPlayersCount = _currentRoom?.players.length ?? 0;
+
+      _currentRoom = updatedRoom;
+
+      // تحديث اللاعب الحالي
+      final currentPlayerIndex = updatedRoom.players.indexWhere((p) => p.id == playerId);
+      if (currentPlayerIndex != -1) {
+        _currentPlayer = updatedRoom.players[currentPlayerIndex];
+      }
+
+      // تسجيل التغييرات المهمة
+      if (oldState != updatedRoom.state) {
+        debugPrint('تغيير حالة الغرفة من $oldState إلى ${updatedRoom.state}');
+        _lastKnownState = updatedRoom.state;
+      }
+
+      if (oldPlayersCount != updatedRoom.players.length) {
+        debugPrint('تغيير عدد اللاعبين من $oldPlayersCount إلى ${updatedRoom.players.length}');
+        _lastPlayersCount = updatedRoom.players.length;
+      }
+
+      // إشعار فوري ومباشر
+      notifyListeners();
+
+      // إشعار إضافي بعد تأخير قصير للتأكد
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (_currentRoom?.id == updatedRoom.id) {
+          notifyListeners();
+        }
+      });
+
+      debugPrint('تم تحديث الغرفة من الخادم: ${updatedRoom.state} - ${updatedRoom.players.length} لاعبين');
+    } catch (e) {
+      debugPrint('خطأ في تحديث الغرفة من الخادم: $e');
+    }
   }
 
   // تنظيف الموارد
