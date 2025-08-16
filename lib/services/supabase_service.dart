@@ -308,6 +308,177 @@ class SupabaseService {
     }
   }
 
+  // إضافة دالة للتحكم في انتهاء الجولة بشكل صحيح:
+  Future<bool> endRoundAndStartVoting(String roomId) async {
+    try {
+      // التحقق من حالة الغرفة الحالية
+      final currentRoom = await _client
+          .from('rooms')
+          .select('state, current_round')
+          .eq('id', roomId)
+          .maybeSingle();
+
+      if (currentRoom == null || currentRoom['state'] != 'playing') {
+        log('الغرفة غير صالحة للانتقال للتصويت: ${currentRoom?['state']}');
+        return false;
+      }
+
+      // تحديث الحالة إلى التصويت فقط إذا كانت في حالة اللعب
+      await _client.from('rooms').update({
+        'state': 'voting',
+        'round_start_time': null, // إزالة وقت بدء الجولة
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', roomId).eq('state', 'playing'); // شرط إضافي للتأكد
+
+      // إعادة تعيين أصوات جميع اللاعبين
+      await _client.from('players').update({
+        'votes': 0,
+        'is_voted': false,
+      }).eq('room_id', roomId);
+
+      log('تم الانتقال للتصويت في الغرفة $roomId');
+      return true;
+    } catch (e) {
+      log('خطأ في انتهاء الجولة: $e');
+      return false;
+    }
+  }
+
+  // إضافة دالة للتحقق من انتهاء التصويت
+  Future<void> checkVotingComplete(String roomId) async {
+    try {
+      final roomData = await _client
+          .from('rooms')
+          .select('*, players!inner(*)')
+          .eq('id', roomId)
+          .eq('state', 'voting')
+          .maybeSingle();
+
+      if (roomData == null) return;
+
+      final players = roomData['players'] as List;
+      final connectedPlayers = players.where((p) => p['is_connected'] == true).toList();
+      final votedPlayers = connectedPlayers.where((p) => p['is_voted'] == true).toList();
+
+      // إذا صوت جميع اللاعبين المتصلين
+      if (votedPlayers.length >= connectedPlayers.length && connectedPlayers.isNotEmpty) {
+        await _endRound(roomId, connectedPlayers);
+      }
+    } catch (e) {
+      log('خطأ في التحقق من انتهاء التصويت: $e');
+    }
+  }
+
+// دالة انتهاء الجولة
+  Future<void> _endRound(String roomId, List<dynamic> players) async {
+    try {
+      // العثور على اللاعب الأكثر تصويتاً
+      players.sort((a, b) => (b['votes'] ?? 0).compareTo(a['votes'] ?? 0));
+      final mostVoted = players.first;
+      final mostVotedId = mostVoted['id'];
+      final isSpyEliminated = mostVoted['role'] == 'spy';
+
+      // إزالة اللاعب الأكثر تصويتاً
+      await _client.from('players').delete().eq('id', mostVotedId);
+
+      // الحصول على اللاعبين المتبقين
+      final remainingPlayers = await _client
+          .from('players')
+          .select('*')
+          .eq('room_id', roomId);
+
+      final remainingSpies = remainingPlayers.where((p) => p['role'] == 'spy').toList();
+      final normalPlayers = remainingPlayers.where((p) => p['role'] == 'normal').toList();
+
+      // تحديد نتيجة اللعبة
+      final roomUpdate = await _client
+          .from('rooms')
+          .select('current_round, total_rounds')
+          .eq('id', roomId)
+          .maybeSingle();
+
+      if (roomUpdate == null) return;
+
+      final currentRound = roomUpdate['current_round'] ?? 1;
+      final totalRounds = roomUpdate['total_rounds'] ?? 3;
+
+      if (remainingSpies.isEmpty) {
+        // فوز اللاعبين العاديين - تم إقصاء الجاسوس
+        await _client.from('rooms').update({
+          'state': 'finished',
+          'winner': 'normal_players',
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', roomId);
+      } else if (normalPlayers.length <= 1) {
+        // فوز الجاسوس - بقي مع عدد قليل
+        await _client.from('rooms').update({
+          'state': 'finished',
+          'winner': 'spy',
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', roomId);
+      } else if (currentRound >= totalRounds) {
+        // انتهاء الجولات - فوز الجاسوس
+        await _client.from('rooms').update({
+          'state': 'finished',
+          'winner': 'spy',
+          'updated_at': DateTime.now().toIso8601String(),
+        }).eq('id', roomId);
+      } else {
+        // جولة جديدة
+        await _startNewRound(roomId, currentRound + 1, remainingPlayers);
+      }
+
+      log('انتهت الجولة - اللاعب المحذوف: $mostVotedId');
+    } catch (e) {
+      log('خطأ في انتهاء الجولة: $e');
+    }
+  }
+
+// دالة بدء جولة جديدة
+  Future<void> _startNewRound(String roomId, int roundNumber, List<dynamic> players) async {
+    try {
+      // اختيار جاسوس جديد
+      final connectedPlayers = players.where((p) => p['is_connected'] == true).toList();
+      connectedPlayers.shuffle();
+      final newSpyIndex = DateTime.now().millisecond % connectedPlayers.length;
+      final newSpyId = connectedPlayers[newSpyIndex]['id'];
+
+      // اختيار كلمة جديدة
+      final gameWords = [
+        'مدرسة', 'مستشفى', 'مطعم', 'مكتبة', 'حديقة',
+        'بنك', 'صيدلية', 'سوق', 'سينما', 'متحف',
+        'شاطئ', 'جبل', 'غابة', 'صحراء', 'نهر',
+        'طائرة', 'سيارة', 'قطار', 'سفينة', 'دراجة',
+        'طبيب', 'مدرس', 'مهندس', 'طباخ', 'فنان',
+      ];
+      gameWords.shuffle();
+      final newWord = gameWords.first;
+
+      // تحديث الغرفة
+      await _client.from('rooms').update({
+        'state': 'playing',
+        'current_round': roundNumber,
+        'spy_id': newSpyId,
+        'current_word': newWord,
+        'round_start_time': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', roomId);
+
+      // إعادة تعيين جميع اللاعبين
+      for (final player in connectedPlayers) {
+        await _client.from('players').update({
+          'role': player['id'] == newSpyId ? 'spy' : 'normal',
+          'votes': 0,
+          'is_voted': false,
+        }).eq('id', player['id']);
+      }
+
+      log('بدأت جولة جديدة: $roundNumber في الغرفة: $roomId');
+    } catch (e) {
+      log('خطأ في بدء جولة جديدة: $e');
+    }
+  }
+
   // إضافة دالة للتحقق من إمكانية بدء اللعبة
   Future<bool> canStartGame(String roomId, String creatorId) async {
     try {
@@ -363,9 +534,19 @@ class SupabaseService {
     }
   }
 
-  // تحديث التصويت
+// تحديث التصويت مع التحقق من الاكتمال
   Future<void> updateVote(String playerId, String targetId) async {
     try {
+      // الحصول على معلومات الغرفة
+      final playerData = await _client
+          .from('players')
+          .select('room_id')
+          .eq('id', playerId)
+          .maybeSingle();
+
+      if (playerData == null) return;
+      final roomId = playerData['room_id'];
+
       // تحديث حالة التصويت للاعب
       await _client.from('players').update({
         'is_voted': true,
@@ -385,6 +566,9 @@ class SupabaseService {
       }
 
       log('تم تسجيل صوت من $playerId لـ $targetId');
+
+      // التحقق من انتهاء التصويت
+      await checkVotingComplete(roomId);
     } catch (e) {
       log('خطأ في تسجيل التصويت: $e');
     }

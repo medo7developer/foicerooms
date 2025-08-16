@@ -7,6 +7,10 @@ class WebRTCService {
   final Map<String, RTCPeerConnection> _peers = {};
   final Map<String, MediaStream> _remoteStreams = {};
 
+  Function(String, RTCIceCandidate)? onIceCandidateGenerated;
+  Function(String, RTCSessionDescription)? onOfferCreated;
+  Function(String, RTCSessionDescription)? onAnswerCreated;
+
   // Ice servers configuration
   final Map<String, dynamic> _configuration = {
     'iceServers': [
@@ -51,6 +55,70 @@ class WebRTCService {
     }
   }
 
+  // تعديل معالج أحداث ICE candidate
+  void _onIceCandidate(String peerId, RTCIceCandidate candidate) {
+    log('ICE candidate جديد للـ peer $peerId');
+    onIceCandidateGenerated?.call(peerId, candidate);
+  }
+
+// إضافة دالة لربط الخدمة مع Supabase
+  void setSignalingCallbacks({
+    Function(String, RTCIceCandidate)? onIceCandidate,
+    Function(String, RTCSessionDescription)? onOffer,
+    Function(String, RTCSessionDescription)? onAnswer,
+  }) {
+    onIceCandidateGenerated = onIceCandidate;
+    onOfferCreated = onOffer;
+    onAnswerCreated = onAnswer;
+  }
+
+// تحديث دالة createOffer
+  Future<RTCSessionDescription> createOffer(String peerId) async {
+    try {
+      final pc = _peers[peerId];
+      if (pc == null) throw Exception('لا يوجد peer connection للمعرف $peerId');
+
+      final offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      log('تم إنشاء العرض للـ peer $peerId');
+      onOfferCreated?.call(peerId, offer);
+      return offer;
+    } catch (e) {
+      log('خطأ في إنشاء العرض: $e');
+      rethrow;
+    }
+  }
+
+// تحديث دالة createAnswer
+  Future<RTCSessionDescription> createAnswer(String peerId) async {
+    try {
+      final pc = _peers[peerId];
+      if (pc == null) throw Exception('لا يوجد peer connection للمعرف $peerId');
+
+      final answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      log('تم إنشاء الإجابة للـ peer $peerId');
+      onAnswerCreated?.call(peerId, answer);
+      return answer;
+    } catch (e) {
+      log('خطأ في إنشاء الإجابة: $e');
+      rethrow;
+    }
+  }
+
+// إضافة دالة للاتصال بجميع اللاعبين في الغرفة
+  Future<void> connectToAllPeers(List<String> peerIds, String myId) async {
+    for (final peerId in peerIds) {
+      if (peerId != myId) {
+        await createPeerConnectionForPeer(peerId);
+        // إنشاء offer للاعبين الآخرين
+        await createOffer(peerId);
+      }
+    }
+  }
+
   // إنشاء اتصال peer - تم إصلاح المشكلة
   Future<RTCPeerConnection> createPeerConnectionForPeer(String peerId) async {
     try {
@@ -83,40 +151,6 @@ class WebRTCService {
       return pc;
     } catch (e) {
       log('خطأ في إنشاء peer connection: $e');
-      rethrow;
-    }
-  }
-
-  // إنشاء عرض (offer)
-  Future<RTCSessionDescription> createOffer(String peerId) async {
-    try {
-      final pc = _peers[peerId];
-      if (pc == null) throw Exception('لا يوجد peer connection للمعرف $peerId');
-
-      final offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      log('تم إنشاء العرض للـ peer $peerId');
-      return offer;
-    } catch (e) {
-      log('خطأ في إنشاء العرض: $e');
-      rethrow;
-    }
-  }
-
-  // إنشاء إجابة (answer)
-  Future<RTCSessionDescription> createAnswer(String peerId) async {
-    try {
-      final pc = _peers[peerId];
-      if (pc == null) throw Exception('لا يوجد peer connection للمعرف $peerId');
-
-      final answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      log('تم إنشاء الإجابة للـ peer $peerId');
-      return answer;
-    } catch (e) {
-      log('خطأ في إنشاء الإجابة: $e');
       rethrow;
     }
   }
@@ -213,12 +247,6 @@ class WebRTCService {
     } catch (e) {
       log('خطأ في تنظيف الموارد: $e');
     }
-  }
-
-  // معالج أحداث ICE candidate
-  void _onIceCandidate(String peerId, RTCIceCandidate candidate) {
-    log('ICE candidate جديد للـ peer $peerId');
-    // هنا يجب إرسال candidate إلى الخادم/Supabase
   }
 
   // معالج إضافة المجرى البعيد

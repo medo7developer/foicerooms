@@ -106,6 +106,9 @@ class GameProvider extends ChangeNotifier {
   Player? _currentPlayer;
   List<GameRoom> _availableRooms = [];
   SupabaseService? _supabaseService;
+// إضافة متغير للتحكم في حالة التبديل:
+  bool _isTransitioning = false;
+  DateTime? _lastStateChange;
 
   // كلمات اللعبة
   final List<String> _gameWords = [
@@ -228,6 +231,96 @@ class GameProvider extends ChangeNotifier {
       debugPrint('خطأ في الانضمام للغرفة: $e');
       return false;
     }
+  }
+
+  // تحديث دالة checkRoundTimeout:
+  void checkRoundTimeout() {
+    if (_currentRoom == null ||
+        _currentRoom!.state != GameState.playing ||
+        _isTransitioning) return;
+
+    final remainingTime = this.remainingTime;
+    if (remainingTime != null && remainingTime.inSeconds <= 0) {
+      _isTransitioning = true;
+      debugPrint('انتهى وقت الجولة - بدء التصويت');
+
+      // استخدام الخادم لإنهاء الجولة
+      _endRoundOnServer();
+    }
+  }
+
+// إضافة دالة لإنهاء الجولة عبر الخادم:
+  Future<void> _endRoundOnServer() async {
+    if (_currentRoom == null || _supabaseService == null) return;
+
+    try {
+      final success = await _supabaseService!.endRoundAndStartVoting(_currentRoom!.id);
+      if (success) {
+        debugPrint('تم إنهاء الجولة على الخادم');
+      } else {
+        debugPrint('فشل في إنهاء الجولة على الخادم');
+        _isTransitioning = false; // إعادة تعيين في حالة الفشل
+      }
+    } catch (e) {
+      debugPrint('خطأ في إنهاء الجولة على الخادم: $e');
+      _isTransitioning = false;
+    }
+  }
+
+// تحديث دالة updateRoomFromRealtime:
+  void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
+    try {
+      final oldState = _currentRoom?.state;
+      final oldPlayersCount = _currentRoom?.players.length ?? 0;
+      final now = DateTime.now();
+
+      // منع التحديثات السريعة المتتالية
+      if (_lastStateChange != null &&
+          now.difference(_lastStateChange!).inMilliseconds < 500) {
+        debugPrint('تم تجاهل تحديث سريع جداً');
+        return;
+      }
+
+      _currentRoom = updatedRoom;
+
+      // تحديث اللاعب الحالي
+      final currentPlayerIndex = updatedRoom.players.indexWhere((p) => p.id == playerId);
+      if (currentPlayerIndex != -1) {
+        _currentPlayer = updatedRoom.players[currentPlayerIndex];
+      }
+
+      // تسجيل التغييرات المهمة
+      if (oldState != updatedRoom.state) {
+        debugPrint('تغيير حالة الغرفة من $oldState إلى ${updatedRoom.state}');
+        _lastKnownState = updatedRoom.state;
+        _lastStateChange = now;
+
+        // إعادة تعيين حالة التبديل
+        if (updatedRoom.state == GameState.voting) {
+          _isTransitioning = false;
+        }
+      }
+
+      if (oldPlayersCount != updatedRoom.players.length) {
+        debugPrint('تغيير عدد اللاعبين من $oldPlayersCount إلى ${updatedRoom.players.length}');
+        _lastPlayersCount = updatedRoom.players.length;
+      }
+
+      // إشعار واحد فقط
+      notifyListeners();
+
+      debugPrint('تم تحديث الغرفة من الخادم: ${updatedRoom.state} - ${updatedRoom.players.length} لاعبين');
+    } catch (e) {
+      debugPrint('خطأ في تحديث الغرفة من الخادم: $e');
+    }
+  }
+
+// إزالة الدالة startVoting القديمة أو تحديثها:
+  void startVoting() {
+    if (_currentRoom == null || _isTransitioning) return;
+
+    // هذه الدالة لن تستخدم مباشرة، سيتم استخدام الخادم
+    debugPrint('تم استدعاء startVoting - يجب استخدام الخادم');
   }
 
   // تحسين دالة إعادة الانضمام
@@ -447,19 +540,6 @@ class GameProvider extends ChangeNotifier {
       });
     } catch (e) {
       debugPrint('خطأ في بدء الجولة الجديدة: $e');
-    }
-  }
-
-  // بدء التصويت
-  void startVoting() {
-    if (_currentRoom == null) return;
-
-    try {
-      _currentRoom!.state = GameState.voting;
-      notifyListeners();
-      debugPrint('بدأ وقت التصويت');
-    } catch (e) {
-      debugPrint('خطأ في بدء التصويت: $e');
     }
   }
 
@@ -731,47 +811,6 @@ class GameProvider extends ChangeNotifier {
   void notifyRoomUpdate() {
     notifyListeners();
     debugPrint('تم إشعار المستمعين بتحديث الغرفة');
-  }
-
-// تحديث دالة updateRoomFromRealtime:
-  void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
-    try {
-      final oldState = _currentRoom?.state;
-      final oldPlayersCount = _currentRoom?.players.length ?? 0;
-
-      _currentRoom = updatedRoom;
-
-      // تحديث اللاعب الحالي
-      final currentPlayerIndex = updatedRoom.players.indexWhere((p) => p.id == playerId);
-      if (currentPlayerIndex != -1) {
-        _currentPlayer = updatedRoom.players[currentPlayerIndex];
-      }
-
-      // تسجيل التغييرات المهمة
-      if (oldState != updatedRoom.state) {
-        debugPrint('تغيير حالة الغرفة من $oldState إلى ${updatedRoom.state}');
-        _lastKnownState = updatedRoom.state;
-      }
-
-      if (oldPlayersCount != updatedRoom.players.length) {
-        debugPrint('تغيير عدد اللاعبين من $oldPlayersCount إلى ${updatedRoom.players.length}');
-        _lastPlayersCount = updatedRoom.players.length;
-      }
-
-      // إشعار فوري ومباشر
-      notifyListeners();
-
-      // إشعار إضافي بعد تأخير قصير للتأكد
-      Future.delayed(const Duration(milliseconds: 100), () {
-        if (_currentRoom?.id == updatedRoom.id) {
-          notifyListeners();
-        }
-      });
-
-      debugPrint('تم تحديث الغرفة من الخادم: ${updatedRoom.state} - ${updatedRoom.players.length} لاعبين');
-    } catch (e) {
-      debugPrint('خطأ في تحديث الغرفة من الخادم: $e');
-    }
   }
 
   // تنظيف الموارد

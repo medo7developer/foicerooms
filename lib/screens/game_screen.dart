@@ -1,4 +1,7 @@
+import 'dart:developer';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
 import 'dart:async';
 import '../providers/game_provider.dart';
@@ -26,6 +29,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   bool _isConnecting = true;
   bool _isRealtimeConnected = false;
   Timer? _connectionTimer;
+// إضافة مؤقت للتحقق من انتهاء الجولة:
+  Timer? _roundCheckTimer;
+  bool _hasConnectedToPeers = false; // إضافة هذا المتغير
 
   @override
   void initState() {
@@ -47,11 +53,33 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     _initializeGame();
   }
 
+  Future<void> _connectToOtherPlayers(List<Player> players) async {
+    if (_hasConnectedToPeers) return; // تجنب الاتصال المتكرر
+
+    try {
+      final peerIds = players.where((p) => p.id != widget.playerId).map((p) => p.id).toList();
+      if (peerIds.isNotEmpty) {
+        await _webrtcService.connectToAllPeers(peerIds, widget.playerId);
+        _hasConnectedToPeers = true;
+        log('تم الاتصال بـ ${peerIds.length} لاعبين');
+      }
+    } catch (e) {
+      log('خطأ في الاتصال باللاعبين: $e');
+    }
+  }
+
 // استبدال دالة _initializeGame:
   Future<void> _initializeGame() async {
+
+    if (!mounted) return; // التحقق من أن الـ widget ما زال mounted
     try {
+      _hasConnectedToPeers = false; // إعادة تعيين حالة الاتصال
       await _webrtcService.initializeLocalAudio();
 
+      await _webrtcService.initializeLocalAudio();
+      _setupWebRTCCallbacks();
+
+      if (!mounted) return;
       // تسجيل GameProvider مع RealtimeManager وحقن التبعيات
       final gameProvider = context.read<GameProvider>();
       gameProvider.setSupabaseService(_supabaseService);
@@ -74,6 +102,12 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         if (mounted) setState(() {});
       });
 
+// تحديث المؤقت ليكون أقل تكراراً:
+      _roundCheckTimer = Timer.periodic(const Duration(seconds: 2), (timer) { // من 1 إلى 2 ثانية
+        final gameProvider = context.read<GameProvider>();
+        gameProvider.checkRoundTimeout();
+      });
+
       // مؤقت للتحقق من الاتصال - تقليل التكرار
       _connectionTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
         _checkConnectionAndRefresh();
@@ -84,6 +118,107 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('خطأ في تهيئة الصوت: $e')),
       );
+    }
+  }
+
+  void _setupWebRTCCallbacks() {
+    _webrtcService.setSignalingCallbacks(
+      onIceCandidate: (peerId, candidate) async {
+        final gameProvider = context.read<GameProvider>(); // إضافة هذا السطر
+        if (gameProvider.currentRoom != null) {
+          await _supabaseService.sendSignal(
+            roomId: gameProvider.currentRoom!.id,
+            fromPeer: widget.playerId,
+            toPeer: peerId,
+            type: 'ice-candidate',
+            data: {
+              'candidate': candidate.candidate,
+              'sdpMid': candidate.sdpMid,
+              'sdpMLineIndex': candidate.sdpMLineIndex,
+            },
+          );
+        }
+      },
+      onOffer: (peerId, offer) async {
+        final gameProvider = context.read<GameProvider>(); // إضافة هذا السطر
+        if (gameProvider.currentRoom != null) {
+          await _supabaseService.sendSignal(
+            roomId: gameProvider.currentRoom!.id,
+            fromPeer: widget.playerId,
+            toPeer: peerId,
+            type: 'offer',
+            data: {
+              'sdp': offer.sdp,
+              'type': offer.type,
+            },
+          );
+        }
+      },
+      onAnswer: (peerId, answer) async {
+        final gameProvider = context.read<GameProvider>(); // إضافة هذا السطر
+        if (gameProvider.currentRoom != null) {
+          await _supabaseService.sendSignal(
+            roomId: gameProvider.currentRoom!.id,
+            fromPeer: widget.playerId,
+            toPeer: peerId,
+            type: 'answer',
+            data: {
+              'sdp': answer.sdp,
+              'type': answer.type,
+            },
+          );
+        }
+      },
+    );
+
+    // الاستماع للإشارات الواردة
+    _supabaseService.listenToSignals(widget.playerId).listen((signal) {
+      if (signal.isNotEmpty) {
+        _handleIncomingSignal(signal);
+      }
+    });
+  }
+
+// إضافة دالة معالجة الإشارات الواردة
+  Future<void> _handleIncomingSignal(Map<String, dynamic> signal) async {
+    try {
+      final fromPeer = signal['from_peer'] as String;
+      final type = signal['type'] as String;
+      final data = signal['data'] as Map<String, dynamic>;
+
+      switch (type) {
+        case 'offer':
+          await _webrtcService.createPeerConnectionForPeer(fromPeer);
+          await _webrtcService.setRemoteDescription(
+            fromPeer,
+            RTCSessionDescription(data['sdp'], data['type']),
+          );
+          await _webrtcService.createAnswer(fromPeer);
+          break;
+
+        case 'answer':
+          await _webrtcService.setRemoteDescription(
+            fromPeer,
+            RTCSessionDescription(data['sdp'], data['type']),
+          );
+          break;
+
+        case 'ice-candidate':
+          final candidate = RTCIceCandidate(
+            data['candidate'],
+            data['sdpMid'],
+            data['sdpMLineIndex'],
+          );
+          await _webrtcService.addIceCandidate(fromPeer, candidate);
+          break;
+      }
+
+      // حذف الإشارة بعد المعالجة
+      if (signal['id'] != null) {
+        await _supabaseService.deleteSignal(signal['id']);
+      }
+    } catch (e) {
+      log('خطأ في معالجة الإشارة: $e');
     }
   }
 
@@ -192,13 +327,16 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     }
   }
 
+// في dispose، إلغاء المؤقت:
   @override
   void dispose() {
     _timer?.cancel();
+    _roundCheckTimer?.cancel(); // إضافة هذا السطر
+    _connectionTimer?.cancel();
     _pulseController.dispose();
     _cardController.dispose();
     _webrtcService.dispose();
-    _realtimeManager.dispose(); // إضافة جديدة
+    _realtimeManager.dispose();
     super.dispose();
   }
 
@@ -694,7 +832,10 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
   Widget _buildPlayingContent(GameRoom room, Player currentPlayer, GameProvider gameProvider) {
     final word = gameProvider.currentWordForPlayer;
-
+    // التحقق من الحاجة للاتصال بالآخرين مرة واحدة فقط
+    if (room.players.length > 1) {
+      Future.microtask(() => _connectToOtherPlayers(room.players));
+    }
     return Padding(
       padding: const EdgeInsets.all(20),
       child: Column(
@@ -897,6 +1038,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         ],
       ),
     );
+
   }
 
   Widget _buildVotingContent(GameRoom room, Player currentPlayer) {

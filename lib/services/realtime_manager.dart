@@ -90,15 +90,25 @@ class RealtimeManager {
     }
   }
 
-// تحديث التكرار ليكون أكثر تكراراً:
+// تحديث دالة _startPeriodicRefresh:
   void _startPeriodicRefresh() {
     _refreshTimer?.cancel();
-    _refreshTimer = Timer.periodic(
-        const Duration(seconds: 2), (timer) { // تم تغيير من 3 إلى 2 ثانية
+    _refreshTimer = Timer.periodic(const Duration(seconds: 3), (timer) { // عودة إلى 3 ثواني
       if (_currentRoomId != null) {
         _refreshRoomData();
       }
     });
+  }
+
+// إضافة دالة للتحقق من تغيير الحالة:
+  void _handleStateChange(GameState oldState, GameState newState) {
+    if (oldState == GameState.playing && newState == GameState.voting) {
+      log('انتقال من اللعب إلى التصويت - تحديث فوري');
+      // تحديث فوري متعدد للتأكد
+      _refreshRoomData();
+      Future.delayed(const Duration(milliseconds: 200), () => _refreshRoomData());
+      Future.delayed(const Duration(milliseconds: 500), () => _refreshRoomData());
+    }
   }
 
 // تحديث دالة _handleRoomUpdate:
