@@ -140,6 +140,7 @@ class _GameScreenState extends State<GameScreen>
     showLeaveGameDialog(context, _supabaseService, widget.playerId);
   }
 
+// تعديل دالة _getBackgroundDecoration في GameScreen
   BoxDecoration _getBackgroundDecoration(GameState state) {
     List<Color> colors;
     switch (state) {
@@ -152,8 +153,11 @@ class _GameScreenState extends State<GameScreen>
       case GameState.voting:
         colors = [Colors.orange, Colors.deepOrange];
         break;
-      case GameState.finished:
+      case GameState.continueVoting:
         colors = [Colors.purple, Colors.deepPurple];
+        break;
+      case GameState.finished:
+        colors = [Colors.grey, Colors.blueGrey];
         break;
     }
 

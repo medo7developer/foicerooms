@@ -10,7 +10,7 @@ class GameTopBar extends StatelessWidget with GameScreenMixin {
   final bool isRealtimeConnected;
   final VoidCallback onLeaveGame;
 
-  const GameTopBar({
+   GameTopBar({
     super.key,
     required this.room,
     required this.currentPlayer,
@@ -98,5 +98,35 @@ class GameTopBar extends StatelessWidget with GameScreenMixin {
         );
       },
     );
+  }
+  Color _getStatusColor(GameState state) {
+    switch (state) {
+      case GameState.waiting:
+        return Colors.blue;
+      case GameState.playing:
+        return Colors.green;
+      case GameState.voting:
+        return Colors.orange;
+      case GameState.continueVoting:
+        return Colors.purple;
+      case GameState.finished:
+        return Colors.grey;
+    }
+  }
+
+// وتحديث دالة _getStatusText:
+  String _getStatusText(GameState state) {
+    switch (state) {
+      case GameState.waiting:
+        return 'في انتظار اللاعبين';
+      case GameState.playing:
+        return 'اللعبة جارية';
+      case GameState.voting:
+        return 'وقت التصويت';
+      case GameState.continueVoting:
+        return 'التصويت على الإكمال';
+      case GameState.finished:
+        return 'انتهت اللعبة';
+    }
   }
 }

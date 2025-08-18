@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../providers/game_provider.dart';
+import '../game_states/continue_voting_content.dart';
 import '../game_states/waiting_content.dart';
 import '../game_states/playing_content.dart';
 import '../game_states/voting_content.dart';
@@ -42,6 +43,8 @@ class GameContent extends StatelessWidget {
         return VotingContent(room: room, currentPlayer: currentPlayer);
       case GameState.finished:
         return FinishedContent(room: room, currentPlayer: currentPlayer);
+      case GameState.continueVoting:
+        return ContinueVotingContent(room: room, currentPlayer: currentPlayer);
     }
   }
 }

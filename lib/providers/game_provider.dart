@@ -1,8 +1,10 @@
+import 'dart:developer';
+
 import 'package:flutter/material.dart';
 
 import '../services/supabase_service.dart';
 
-enum GameState { waiting, playing, voting, finished }
+enum GameState { waiting, playing, voting, continueVoting, finished }
 enum PlayerRole { normal, spy }
 
 class Player {
@@ -267,54 +269,6 @@ class GameProvider extends ChangeNotifier {
     }
   }
 
-// تحديث دالة updateRoomFromRealtime:
-  void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
-    try {
-      final oldState = _currentRoom?.state;
-      final oldPlayersCount = _currentRoom?.players.length ?? 0;
-      final now = DateTime.now();
-
-      // منع التحديثات السريعة المتتالية
-      if (_lastStateChange != null &&
-          now.difference(_lastStateChange!).inMilliseconds < 500) {
-        debugPrint('تم تجاهل تحديث سريع جداً');
-        return;
-      }
-
-      _currentRoom = updatedRoom;
-
-      // تحديث اللاعب الحالي
-      final currentPlayerIndex = updatedRoom.players.indexWhere((p) => p.id == playerId);
-      if (currentPlayerIndex != -1) {
-        _currentPlayer = updatedRoom.players[currentPlayerIndex];
-      }
-
-      // تسجيل التغييرات المهمة
-      if (oldState != updatedRoom.state) {
-        debugPrint('تغيير حالة الغرفة من $oldState إلى ${updatedRoom.state}');
-        _lastKnownState = updatedRoom.state;
-        _lastStateChange = now;
-
-        // إعادة تعيين حالة التبديل
-        if (updatedRoom.state == GameState.voting) {
-          _isTransitioning = false;
-        }
-      }
-
-      if (oldPlayersCount != updatedRoom.players.length) {
-        debugPrint('تغيير عدد اللاعبين من $oldPlayersCount إلى ${updatedRoom.players.length}');
-        _lastPlayersCount = updatedRoom.players.length;
-      }
-
-      // إشعار واحد فقط
-      notifyListeners();
-
-      debugPrint('تم تحديث الغرفة من الخادم: ${updatedRoom.state} - ${updatedRoom.players.length} لاعبين');
-    } catch (e) {
-      debugPrint('خطأ في تحديث الغرفة من الخادم: $e');
-    }
-  }
-
 // إزالة الدالة startVoting القديمة أو تحديثها:
   void startVoting() {
     if (_currentRoom == null || _isTransitioning) return;
@@ -408,7 +362,105 @@ class GameProvider extends ChangeNotifier {
     }
   }
 
-  // دالة للحصول على إحصائيات مفصلة
+  // 2. إضافة دالة التصويت على الإكمال في كلاس GameProvider
+  Future<bool> voteToContinueWithServer(bool continuePlaying) async {
+    if (_supabaseService == null || _currentPlayer == null) return false;
+
+    try {
+      await _supabaseService!.voteToContinue(_currentPlayer!.id, continuePlaying);
+
+      // تحديث حالة اللاعب محلياً
+      final playerIndex = _currentRoom!.players.indexWhere((p) => p.id == _currentPlayer!.id);
+      if (playerIndex != -1) {
+        _currentRoom!.players[playerIndex].isVoted = true;
+        _currentRoom!.players[playerIndex].votes = continuePlaying ? 1 : 0;
+        notifyListeners();
+      }
+
+      return true;
+    } catch (e) {
+      log('خطأ في التصويت على الإكمال: $e');
+      return false;
+    }
+  }
+
+// 3. تحديث دالة updateRoomFromRealtime لدعم الحالة الجديدة
+  void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
+    if (_currentRoom == null) return;
+
+    // حفظ الحالة السابقة للمقارنة
+    final oldState = _currentRoom!.state;
+
+    // تحديث بيانات الغرفة
+    _currentRoom = updatedRoom;
+
+    // العثور على اللاعب الحالي في البيانات المحدثة
+    final updatedPlayer = updatedRoom.players.firstWhere(
+          (p) => p.id == playerId,
+      orElse: () => _currentPlayer ?? Player(
+        id: playerId,
+        name: 'لاعب',
+        isConnected: true,
+        isVoted: false,
+        votes: 0,
+        role: PlayerRole.normal,
+      ),
+    );
+
+    _currentPlayer = updatedPlayer;
+
+    // إشعار التحديث إذا تغيرت الحالة
+    if (oldState != updatedRoom.state) {
+      log('تغيرت حالة الغرفة من $oldState إلى ${updatedRoom.state}');
+
+      // معالجة خاصة للانتقال من voting إلى continue_voting
+      if (oldState == GameState.voting && updatedRoom.state == GameState.continueVoting) {
+        log('انتقال من التصويت العادي إلى التصويت على الإكمال');
+      }
+
+      // معالجة خاصة للانتقال من continue_voting إلى playing (جولة جديدة)
+      if (oldState == GameState.continueVoting && updatedRoom.state == GameState.playing) {
+        log('بدء جولة جديدة بعد التصويت على الإكمال');
+      }
+    }
+
+    notifyListeners();
+  }
+
+// 4. دالة مساعدة للتحقق من حالة التصويت على الإكمال
+  bool get isInContinueVoting => _currentRoom?.state == GameState.continueVoting;
+
+// 5. دالة للحصول على عدد الأصوات في تصويت الإكمال
+  Map<String, int> get continueVotingResults {
+    if (_currentRoom == null ||
+        _currentRoom!.state != GameState.continueVoting) {
+      return {'continue': 0, 'end': 0, 'pending': 0};
+    }
+
+    int continueVotes = 0;
+    int endVotes = 0;
+    int pendingVotes = 0;
+
+    for (final player in _currentRoom!.players) {
+      if (player.isVoted) {
+        if (player.votes == 1) {
+          continueVotes++;
+        } else {
+          endVotes++;
+        }
+      } else {
+        pendingVotes++;
+      }
+    }
+
+    return {
+      'continue': continueVotes,
+      'end': endVotes,
+      'pending': pendingVotes,
+    };
+  }
+
+    // دالة للحصول على إحصائيات مفصلة
   @override
   Map<String, dynamic> get enhancedGameStats => {
     'totalPlayers': _currentRoom?.players.length ?? 0,

@@ -10,11 +10,9 @@ import '../../services/supabase_service.dart';
 
 mixin GameScreenMixin {
 
-  void setupWebRTCCallbacks(
-      WebRTCService webrtcService,
+  void setupWebRTCCallbacks(WebRTCService webrtcService,
       SupabaseService supabaseService,
-      String playerId
-      ) {
+      String playerId) {
     webrtcService.setSignalingCallbacks(
       onIceCandidate: (peerId, candidate) async {
         final gameProvider = Provider.of<GameProvider>(
@@ -81,11 +79,9 @@ mixin GameScreenMixin {
     });
   }
 
-  Future<void> handleIncomingSignal(
-      Map<String, dynamic> signal,
+  Future<void> handleIncomingSignal(Map<String, dynamic> signal,
       WebRTCService webrtcService,
-      SupabaseService supabaseService
-      ) async {
+      SupabaseService supabaseService) async {
     try {
       final fromPeer = signal['from_peer'] as String;
       final type = signal['type'] as String;
@@ -127,7 +123,8 @@ mixin GameScreenMixin {
     }
   }
 
-  void checkConnectionAndRefresh(RealtimeManager realtimeManager, String playerId) {
+  void checkConnectionAndRefresh(RealtimeManager realtimeManager,
+      String playerId) {
     final gameProvider = Provider.of<GameProvider>(
         navigatorKey.currentContext!,
         listen: false
@@ -138,32 +135,32 @@ mixin GameScreenMixin {
     }
   }
 
-  void showLeaveGameDialog(
-      BuildContext context,
+  void showLeaveGameDialog(BuildContext context,
       SupabaseService supabaseService,
-      String playerId
-      ) {
+      String playerId) {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('مغادرة اللعبة'),
-        content: const Text('هل تريد مغادرة اللعبة؟'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('إلغاء'),
+      builder: (context) =>
+          AlertDialog(
+            title: const Text('مغادرة اللعبة'),
+            content: const Text('هل تريد مغادرة اللعبة؟'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('إلغاء'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  await supabaseService.leaveRoom(playerId);
+                  context.read<GameProvider>().leaveRoom();
+                  Navigator.popUntil(context, (route) => route.isFirst);
+                },
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                child: const Text(
+                    'مغادرة', style: TextStyle(color: Colors.white)),
+              ),
+            ],
           ),
-          ElevatedButton(
-            onPressed: () async {
-              await supabaseService.leaveRoom(playerId);
-              context.read<GameProvider>().leaveRoom();
-              Navigator.popUntil(context, (route) => route.isFirst);
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            child: const Text('مغادرة', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
     );
   }
 
@@ -175,11 +172,13 @@ mixin GameScreenMixin {
         return 'اللعبة جارية';
       case GameState.voting:
         return 'وقت التصويت';
+      case GameState.continueVoting:
+        return 'التصويت على الإكمال';
       case GameState.finished:
         return 'انتهت اللعبة';
     }
   }
-}
 
 // Global navigator key للوصول للـ context من خارج الـ widget
-final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+  final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+}

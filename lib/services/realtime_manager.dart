@@ -236,6 +236,8 @@ class RealtimeManager {
         return GameState.playing;
       case 'voting':
         return GameState.voting;
+      case 'continue_voting':
+        return GameState.continueVoting;
       case 'finished':
         return GameState.finished;
       default:
