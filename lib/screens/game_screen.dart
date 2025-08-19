@@ -67,7 +67,6 @@ class _GameScreenState extends State<GameScreen>
     );
   }
 
-// 1. تعديل دالة _initializeGame:
   Future<void> _initializeGame() async {
     if (!mounted) return;
 
@@ -78,15 +77,15 @@ class _GameScreenState extends State<GameScreen>
       await _webrtcService.initializeLocalAudio();
       log('تم تهيئة الصوت المحلي');
 
-      // إعداد callbacks للـ WebRTC
-      setupWebRTCCallbacks(_webrtcService, _supabaseService, widget.playerId);
-      log('تم إعداد WebRTC callbacks');
-
       if (!mounted) return;
 
       final gameProvider = context.read<GameProvider>();
       gameProvider.setSupabaseService(_supabaseService);
       _realtimeManager.registerGameProvider(gameProvider);
+
+      // إعداد callbacks للـ WebRTC مع تمرير context صحيح
+      setupWebRTCCallbacks(_webrtcService, _supabaseService, widget.playerId, context);
+      log('تم إعداد WebRTC callbacks مع context صحيح');
 
       final currentRoom = gameProvider.currentRoom;
       if (currentRoom != null) {
@@ -105,12 +104,18 @@ class _GameScreenState extends State<GameScreen>
       setState(() => _isConnecting = false);
       _startTimers();
 
-      // إضافة تشخيص للصوت
-      Future.delayed(const Duration(seconds: 3), () {
-        _webrtcService.debugConnectionStates();
+      // تشخيص الصوت مع تأخير أطول
+      Future.delayed(const Duration(seconds: 8), () {
+        if (mounted) {
+          log('=== فحص الاتصالات بعد 8 ثوانٍ ===');
+          _webrtcService.debugConnectionStates();
+          _webrtcService.enableRemoteAudio();
+          _webrtcService.ensureAudioPlayback();
+        }
       });
 
     } catch (e) {
+      log('خطأ في تهيئة اللعبة: $e');
       setState(() => _isConnecting = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -120,60 +125,7 @@ class _GameScreenState extends State<GameScreen>
     }
   }
 
-// 2. تحديث دالة _connectToOtherPlayers:
-  Future<void> _connectToOtherPlayers(List<Player> players) async {
-    if (_hasConnectedToPeers) return;
-
-    try {
-      final connectedPlayers = players.where((p) => p.isConnected && p.id != widget.playerId).toList();
-
-      if (connectedPlayers.isEmpty) {
-        log('لا يوجد لاعبون آخرون متصلون للاتصال بهم');
-        return;
-      }
-
-      log('محاولة الاتصال بـ ${connectedPlayers.length} لاعبين');
-
-      for (final player in connectedPlayers) {
-        try {
-          log('إنشاء اتصال مع ${player.name} (${player.id})');
-          await _webrtcService.createPeerConnectionForPeer(player.id);
-
-          // تأخير قصير بين كل اتصال
-          await Future.delayed(const Duration(milliseconds: 500));
-
-          // إنشاء عرض للاتصال
-          await _webrtcService.createOffer(player.id);
-          log('تم إرسال عرض إلى ${player.id}');
-
-        } catch (e) {
-          log('خطأ في الاتصال باللاعب ${player.id}: $e');
-        }
-      }
-
-      _hasConnectedToPeers = true;
-      log('تم الانتهاء من محاولات الاتصال');
-
-      // التحقق من حالة الاتصالات بعد 5 ثوانٍ
-      Future.delayed(const Duration(seconds: 5), () {
-        _webrtcService.debugConnectionStates();
-        _webrtcService.enableRemoteAudio();
-      });
-
-    } catch (e) {
-      log('خطأ عام في الاتصال باللاعبين: $e');
-    }
-  }
-
-// 3. تحديث دالة _toggleMicrophone:
-  void _toggleMicrophone() {
-    _webrtcService.toggleMicrophone();
-    setState(() => _isMicrophoneOn = _webrtcService.isMicrophoneEnabled);
-
-    // إضافة تشخيص
-    _webrtcService.checkAudioTracks();
-  }
-
+// تحديث _startTimers لتمرير context:
   void _startTimers() {
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (mounted) setState(() {});
@@ -185,8 +137,68 @@ class _GameScreenState extends State<GameScreen>
     });
 
     _connectionTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
-      checkConnectionAndRefresh(_realtimeManager, widget.playerId);
+      if (mounted) {
+        checkConnectionAndRefresh(_realtimeManager, widget.playerId, context);
+      }
     });
+  }
+
+  Future<void> _connectToOtherPlayers(List<Player> players) async {
+    if (_hasConnectedToPeers) return;
+
+    try {
+      final connectedPlayers = players.where((p) => p.isConnected && p.id != widget.playerId).toList();
+
+      if (connectedPlayers.isEmpty) {
+        log('لا يوجد لاعبون آخرون متصلون للاتصال بهم');
+        return;
+      }
+
+      log('🚀 بدء الاتصال بـ ${connectedPlayers.length} لاعبين');
+
+      for (final player in connectedPlayers) {
+        try {
+          log('📞 إنشاء اتصال مع ${player.name} (${player.id})');
+          await _webrtcService.createPeerConnectionForPeer(player.id);
+
+          // تأخير للتأكد من استقرار الاتصال
+          await Future.delayed(const Duration(milliseconds: 1500));
+
+          // إنشاء عرض للاتصال
+          await _webrtcService.createOffer(player.id);
+          log('✓ تم إرسال عرض إلى ${player.id}');
+
+          // تأخير إضافي للسماح بمعالجة العرض
+          await Future.delayed(const Duration(milliseconds: 1000));
+
+        } catch (e) {
+          log('❌ خطأ في الاتصال باللاعب ${player.id}: $e');
+        }
+      }
+
+      _hasConnectedToPeers = true;
+      log('✅ تم الانتهاء من محاولات الاتصال');
+
+      // تشخيص شامل للاتصالات والصوت
+      Future.delayed(const Duration(seconds: 10), () async {
+        if (mounted) {
+          log('🔍 === تشخيص شامل بعد 10 ثوانٍ ===');
+          await _webrtcService.diagnoseAndFixAudio();
+        }
+      });
+
+    } catch (e) {
+      log('❌ خطأ عام في الاتصال باللاعبين: $e');
+    }
+  }
+
+// 3. تحديث دالة _toggleMicrophone:
+  void _toggleMicrophone() {
+    _webrtcService.toggleMicrophone();
+    setState(() => _isMicrophoneOn = _webrtcService.isMicrophoneEnabled);
+
+    // إضافة تشخيص
+    _webrtcService.checkAudioTracks();
   }
 
   void _leaveGame() {

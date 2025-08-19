@@ -9,19 +9,18 @@ import '../../services/webrtc_service.dart';
 import '../../services/supabase_service.dart';
 
 mixin GameScreenMixin {
-// 1. إضافة متغير لتتبع الإشارات المعالجة:
   final Set<int> _processedSignals = {};
 
-  void setupWebRTCCallbacks(WebRTCService webrtcService,
+  void setupWebRTCCallbacks(
+      WebRTCService webrtcService,
       SupabaseService supabaseService,
-      String playerId) {
+      String playerId,
+      BuildContext gameContext, // إضافة context كمعامل
+      ) {
     webrtcService.setSignalingCallbacks(
       onIceCandidate: (peerId, candidate) async {
         try {
-          final gameProvider = Provider.of<GameProvider>(
-              navigatorKey.currentContext!,
-              listen: false
-          );
+          final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
             await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
@@ -34,18 +33,15 @@ mixin GameScreenMixin {
                 'sdpMLineIndex': candidate.sdpMLineIndex,
               },
             );
-            log('تم إرسال ICE candidate إلى $peerId');
+            log('✓ تم إرسال ICE candidate إلى $peerId');
           }
         } catch (e) {
-          log('خطأ في إرسال ICE candidate: $e');
+          log('✗ خطأ في إرسال ICE candidate: $e');
         }
       },
       onOffer: (peerId, offer) async {
         try {
-          final gameProvider = Provider.of<GameProvider>(
-              navigatorKey.currentContext!,
-              listen: false
-          );
+          final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
             await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
@@ -57,18 +53,15 @@ mixin GameScreenMixin {
                 'type': offer.type,
               },
             );
-            log('تم إرسال العرض إلى $peerId');
+            log('✓ تم إرسال العرض إلى $peerId');
           }
         } catch (e) {
-          log('خطأ في إرسال العرض: $e');
+          log('✗ خطأ في إرسال العرض: $e');
         }
       },
       onAnswer: (peerId, answer) async {
         try {
-          final gameProvider = Provider.of<GameProvider>(
-              navigatorKey.currentContext!,
-              listen: false
-          );
+          final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
             await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
@@ -80,10 +73,10 @@ mixin GameScreenMixin {
                 'type': answer.type,
               },
             );
-            log('تم إرسال الإجابة إلى $peerId');
+            log('✓ تم إرسال الإجابة إلى $peerId');
           }
         } catch (e) {
-          log('خطأ في إرسال الإجابة: $e');
+          log('✗ خطأ في إرسال الإجابة: $e');
         }
       },
     );
@@ -93,12 +86,10 @@ mixin GameScreenMixin {
       if (signal.isNotEmpty && signal['id'] != null) {
         final signalId = signal['id'] as int;
 
-        // تجنب معالجة نفس الإشارة مرتين
         if (!_processedSignals.contains(signalId)) {
           _processedSignals.add(signalId);
           handleIncomingSignal(signal, webrtcService, supabaseService);
 
-          // تنظيف قائمة الإشارات المعالجة
           if (_processedSignals.length > 100) {
             _processedSignals.clear();
           }
@@ -107,23 +98,25 @@ mixin GameScreenMixin {
     });
   }
 
-// 3. تحديث دالة handleIncomingSignal:
-  Future<void> handleIncomingSignal(Map<String, dynamic> signal,
+  Future<void> handleIncomingSignal(
+      Map<String, dynamic> signal,
       WebRTCService webrtcService,
-      SupabaseService supabaseService) async {
+      SupabaseService supabaseService,
+      ) async {
     try {
       final fromPeer = signal['from_peer'] as String;
       final type = signal['type'] as String;
       final data = signal['data'] as Map<String, dynamic>;
       final signalId = signal['id'] as int?;
 
-      log('معالجة إشارة $type من $fromPeer');
+      log('📨 معالجة إشارة $type من $fromPeer');
 
       switch (type) {
         case 'offer':
         // إنشاء peer connection إذا لم يكن موجوداً
           if (!webrtcService.hasPeer(fromPeer)) {
             await webrtcService.createPeerConnectionForPeer(fromPeer);
+            log('تم إنشاء peer connection جديد لـ $fromPeer');
           }
 
           await webrtcService.setRemoteDescription(
@@ -133,6 +126,7 @@ mixin GameScreenMixin {
 
           // إنشاء إجابة
           await webrtcService.createAnswer(fromPeer);
+          log('✓ تمت معالجة العرض وإرسال الإجابة لـ $fromPeer');
           break;
 
         case 'answer':
@@ -140,33 +134,32 @@ mixin GameScreenMixin {
             fromPeer,
             RTCSessionDescription(data['sdp'], data['type']),
           );
-          log('تم تعيين الإجابة من $fromPeer');
+          log('✓ تم تعيين الإجابة من $fromPeer');
           break;
 
         case 'ice-candidate':
-          if (data['candidate'] != null && data['candidate']
-              .toString()
-              .isNotEmpty) {
+          if (data['candidate'] != null && data['candidate'].toString().isNotEmpty) {
             final candidate = RTCIceCandidate(
               data['candidate'],
               data['sdpMid'],
               data['sdpMLineIndex'],
             );
             await webrtcService.addIceCandidate(fromPeer, candidate);
-            log('تم إضافة ICE candidate من $fromPeer');
+            log('✓ تم إضافة ICE candidate من $fromPeer');
           }
           break;
 
         default:
-          log('نوع إشارة غير معروف: $type');
+          log('⚠ نوع إشارة غير معروف: $type');
       }
 
       // حذف الإشارة بعد المعالجة
       if (signalId != null) {
         await supabaseService.deleteSignal(signalId);
+        log('🗑️ تم حذف الإشارة $signalId');
       }
     } catch (e) {
-      log('خطأ في معالجة الإشارة: $e');
+      log('✗ خطأ في معالجة الإشارة: $e');
 
       // حذف الإشارة حتى لو فشلت المعالجة
       final signalId = signal['id'] as int?;
@@ -180,44 +173,40 @@ mixin GameScreenMixin {
     }
   }
 
-  void checkConnectionAndRefresh(RealtimeManager realtimeManager,
-      String playerId) {
-    final gameProvider = Provider.of<GameProvider>(
-        navigatorKey.currentContext!,
-        listen: false
-    );
-    if (gameProvider.currentRoom != null) {
-      gameProvider.updateConnectionStatus(playerId, true);
-      realtimeManager.forceRefresh();
+  void checkConnectionAndRefresh(RealtimeManager realtimeManager, String playerId, BuildContext context) {
+    try {
+      final gameProvider = Provider.of<GameProvider>(context, listen: false);
+      if (gameProvider.currentRoom != null) {
+        gameProvider.updateConnectionStatus(playerId, true);
+        realtimeManager.forceRefresh();
+      }
+    } catch (e) {
+      log('خطأ في checkConnectionAndRefresh: $e');
     }
   }
 
-  void showLeaveGameDialog(BuildContext context,
-      SupabaseService supabaseService,
-      String playerId) {
+  void showLeaveGameDialog(BuildContext context, SupabaseService supabaseService, String playerId) {
     showDialog(
       context: context,
-      builder: (context) =>
-          AlertDialog(
-            title: const Text('مغادرة اللعبة'),
-            content: const Text('هل تريد مغادرة اللعبة؟'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('إلغاء'),
-              ),
-              ElevatedButton(
-                onPressed: () async {
-                  await supabaseService.leaveRoom(playerId);
-                  context.read<GameProvider>().leaveRoom();
-                  Navigator.popUntil(context, (route) => route.isFirst);
-                },
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text(
-                    'مغادرة', style: TextStyle(color: Colors.white)),
-              ),
-            ],
+      builder: (context) => AlertDialog(
+        title: const Text('مغادرة اللعبة'),
+        content: const Text('هل تريد مغادرة اللعبة؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('إلغاء'),
           ),
+          ElevatedButton(
+            onPressed: () async {
+              await supabaseService.leaveRoom(playerId);
+              context.read<GameProvider>().leaveRoom();
+              Navigator.popUntil(context, (route) => route.isFirst);
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('مغادرة', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -235,7 +224,4 @@ mixin GameScreenMixin {
         return 'انتهت اللعبة';
     }
   }
-
-// Global navigator key للوصول للـ context من خارج الـ widget
-  final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 }
