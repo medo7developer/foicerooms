@@ -673,7 +673,28 @@ class SupabaseService {
     }
   }
 
-  // إرسال إشارة WebRTC
+// 2. تحديث دالة listenToSignals بالكامل:
+  Stream<Map<String, dynamic>> listenToSignals(String peerId) {
+    log('بدء الاستماع للإشارات للاعب: $peerId');
+
+    return _client
+        .from('signaling')
+        .stream(primaryKey: ['id'])
+        .eq('to_peer', peerId)
+        .order('created_at', ascending: true)
+        .map((List<Map<String, dynamic>> data) {
+      if (data.isNotEmpty) {
+        // معالجة جميع الإشارات الجديدة
+        for (final signal in data) {
+          log('استقبال إشارة: ${signal['type']} من ${signal['from_peer']} إلى $peerId');
+        }
+        return data.last; // إرجاع آخر إشارة
+      }
+      return <String, dynamic>{};
+    });
+  }
+
+// 3. تحديث دالة sendSignal:
   Future<void> sendSignal({
     required String roomId,
     required String fromPeer,
@@ -682,28 +703,49 @@ class SupabaseService {
     required Map<String, dynamic> data,
   }) async {
     try {
-      await _client.from('signaling').insert({
+      final result = await _client.from('signaling').insert({
         'room_id': roomId,
         'from_peer': fromPeer,
         'to_peer': toPeer,
         'type': type,
         'data': data,
         'created_at': DateTime.now().toIso8601String(),
-      });
+      }).select();
 
-      log('تم إرسال إشارة $type من $fromPeer إلى $toPeer');
+      if (result.isNotEmpty) {
+        log('✓ تم إرسال إشارة $type من $fromPeer إلى $toPeer - ID: ${result.first['id']}');
+      }
     } catch (e) {
-      log('خطأ في إرسال الإشارة: $e');
+      log('✗ خطأ في إرسال الإشارة $type: $e');
+      rethrow;
     }
   }
 
-  // الاستماع للإشارات
-  Stream<Map<String, dynamic>> listenToSignals(String peerId) {
-    return _client
-        .from('signaling')
-        .stream(primaryKey: ['id'])
-        .eq('to_peer', peerId)
-        .map((List<Map<String, dynamic>> data) => data.isNotEmpty ? data.last : {});
+// 4. تحسين دالة deleteSignal:
+  Future<void> deleteSignal(int signalId) async {
+    try {
+      await _client.from('signaling').delete().eq('id', signalId);
+      log('تم حذف الإشارة: $signalId');
+    } catch (e) {
+      log('خطأ في حذف الإشارة $signalId: $e');
+    }
+  }
+
+// 5. إضافة دالة لتنظيف الإشارات القديمة:
+  Future<void> cleanupOldSignals(String roomId) async {
+    try {
+      final cutoffTime = DateTime.now().subtract(const Duration(minutes: 5));
+
+      await _client
+          .from('signaling')
+          .delete()
+          .eq('room_id', roomId)
+          .lt('created_at', cutoffTime.toIso8601String());
+
+      log('تم تنظيف الإشارات القديمة للغرفة: $roomId');
+    } catch (e) {
+      log('خطأ في تنظيف الإشارات: $e');
+    }
   }
 
   // الاستماع لتحديثات الغرفة
@@ -750,15 +792,6 @@ class SupabaseService {
       log('غادر اللاعب $playerId الغرفة');
     } catch (e) {
       log('خطأ في مغادرة الغرفة: $e');
-    }
-  }
-
-  // حذف إشارة بعد المعالجة
-  Future<void> deleteSignal(int signalId) async {
-    try {
-      await _client.from('signaling').delete().eq('id', signalId);
-    } catch (e) {
-      log('خطأ في حذف الإشارة: $e');
     }
   }
 

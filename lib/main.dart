@@ -9,18 +9,22 @@ import 'services/realtime_manager.dart'; // إضافة جديدة
 import 'providers/game_provider.dart';
 import 'screens/home_screen.dart';
 
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // تهيئة Supabase
   await Supabase.initialize(
-    url: 'https://fikaujglqyffcszfjklh.supabase.co', // ضع رابط Supabase الخاص بك هنا
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpa2F1amdscXlmZmNzemZqa2xoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyODQzMDAsImV4cCI6MjA3MDg2MDMwMH0.dSKM0Wv4worp2d6gUs1sopArZcFV4BtAmGRXz_lZkMc', // ضع مفتاح Supabase هنا
+    url: 'https://fikaujglqyffcszfjklh.supabase.co',
+    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpa2F1amdscXlmZmNzemZqa2xoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyODQzMDAsImV4cCI6MjA3MDg2MDMwMH0.dSKM0Wv4worp2d6gUs1sopArZcFV4BtAmGRXz_lZkMc',
+    debug: true, // إضافة debug mode
   );
 
   runApp(const VoiceRoomsApp());
 }
 
+// تعديل VoiceRoomsApp:
 class VoiceRoomsApp extends StatelessWidget {
   const VoiceRoomsApp({super.key});
 
@@ -31,11 +35,13 @@ class VoiceRoomsApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => GameProvider()),
         Provider(create: (_) => SupabaseService()),
         Provider(create: (_) => WebRTCService()),
-        Provider(create: (_) => RealtimeManager()), // إضافة جديدة
+        Provider(create: (_) => RealtimeManager()),
       ],
       child: MaterialApp(
         title: 'غرف صوتية تفاعلية',
         debugShowCheckedModeBanner: false,
+        // إضافة navigatorKey للوصول للـ context من خارج Widget
+        navigatorKey: navigatorKey,
         theme: ThemeData(
           primarySwatch: Colors.purple,
           fontFamily: 'Arial',
@@ -44,7 +50,6 @@ class VoiceRoomsApp extends StatelessWidget {
             bodyMedium: TextStyle(fontSize: 14),
             titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           ),
-          // إضافة تحسينات على الثيم
           elevatedButtonTheme: ElevatedButtonThemeData(
             style: ElevatedButton.styleFrom(
               shape: RoundedRectangleBorder(

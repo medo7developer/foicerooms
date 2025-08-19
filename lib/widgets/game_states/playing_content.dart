@@ -2,7 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../../../providers/game_provider.dart';
 
-class PlayingContent extends StatelessWidget {
+// إضافة متغير للتحكم في اتصالات WebRTC في بداية الكلاس:
+class PlayingContent extends StatefulWidget {
   final GameRoom room;
   final Player currentPlayer;
   final GameProvider gameProvider;
@@ -21,12 +22,41 @@ class PlayingContent extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
-    final word = gameProvider.currentWordForPlayer;
+  State<PlayingContent> createState() => _PlayingContentState();
+}
 
-    // التحقق من الحاجة للاتصال بالآخرين مرة واحدة فقط
-    if (room.players.length > 1) {
-      Future.microtask(() => onConnectToOtherPlayers(room.players));
+class _PlayingContentState extends State<PlayingContent> {
+  bool _hasTriedConnection = false;
+
+  @override
+  void didUpdateWidget(PlayingContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    // إعادة تعيين حالة الاتصال إذا تغيرت قائمة اللاعبين
+    if (oldWidget.room.players.length != widget.room.players.length) {
+      _hasTriedConnection = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final word = widget.gameProvider.currentWordForPlayer;
+
+    // محاولة الاتصال بالآخرين مرة واحدة فقط عند وجود لاعبين جدد
+    if (!_hasTriedConnection && widget.room.players.length > 1) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_hasTriedConnection) {
+          _hasTriedConnection = true;
+          widget.onConnectToOtherPlayers(widget.room.players);
+
+          // محاولة إضافية بعد 3 ثوانٍ للتأكد
+          Future.delayed(const Duration(seconds: 3), () {
+            if (mounted) {
+              widget.onConnectToOtherPlayers(widget.room.players);
+            }
+          });
+        }
+      });
     }
 
     return Padding(
@@ -36,7 +66,7 @@ class PlayingContent extends StatelessWidget {
           // عرض الكلمة
           _buildWordCard(word),
           const SizedBox(height: 30),
-          // قائمة اللاعبين
+          // قائمة اللاعبين مع مؤشرات الصوت
           Expanded(child: _buildPlayersList()),
         ],
       ),
@@ -45,20 +75,20 @@ class PlayingContent extends StatelessWidget {
 
   Widget _buildWordCard(String? word) {
     return AnimatedBuilder(
-      animation: cardController,
+      animation: widget.cardController,
       builder: (context, child) {
         return Transform.scale(
-          scale: 1.0 + (cardController.value * 0.1),
+          scale: 1.0 + (widget.cardController.value * 0.1),
           child: Container(
             width: double.infinity,
             padding: const EdgeInsets.all(30),
             decoration: BoxDecoration(
-              color: currentPlayer.role == PlayerRole.spy
+              color: widget.currentPlayer.role == PlayerRole.spy
                   ? Colors.red.shade100
                   : Colors.white,
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
-                color: currentPlayer.role == PlayerRole.spy
+                color: widget.currentPlayer.role == PlayerRole.spy
                     ? Colors.red
                     : Colors.green,
                 width: 3,
@@ -74,11 +104,11 @@ class PlayingContent extends StatelessWidget {
             child: Column(
               children: [
                 Icon(
-                  currentPlayer.role == PlayerRole.spy
+                  widget.currentPlayer.role == PlayerRole.spy
                       ? Icons.visibility_off
                       : Icons.visibility,
                   size: 50,
-                  color: currentPlayer.role == PlayerRole.spy
+                  color: widget.currentPlayer.role == PlayerRole.spy
                       ? Colors.red
                       : Colors.green,
                 ),
@@ -88,7 +118,7 @@ class PlayingContent extends StatelessWidget {
                   style: TextStyle(
                     fontSize: 32,
                     fontWeight: FontWeight.bold,
-                    color: currentPlayer.role == PlayerRole.spy
+                    color: widget.currentPlayer.role == PlayerRole.spy
                         ? Colors.red
                         : Colors.green,
                   ),
@@ -96,7 +126,7 @@ class PlayingContent extends StatelessWidget {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  currentPlayer.role == PlayerRole.spy
+                  widget.currentPlayer.role == PlayerRole.spy
                       ? 'حاول اكتشاف الكلمة دون أن يكتشفوك!'
                       : 'تحدث عن الكلمة دون ذكرها مباشرة',
                   style: const TextStyle(
@@ -159,7 +189,7 @@ class PlayingContent extends StatelessWidget {
           ),
           const Spacer(),
           Text(
-            'الجولة ${room.currentRound}/${room.totalRounds}',
+            'الجولة ${widget.room.currentRound}/${widget.room.totalRounds}',
             style: const TextStyle(
               fontSize: 14,
               color: Colors.white,
@@ -173,10 +203,10 @@ class PlayingContent extends StatelessWidget {
   Widget _buildPlayersListBody() {
     return ListView.builder(
       padding: const EdgeInsets.all(10),
-      itemCount: room.players.length,
+      itemCount: widget.room.players.length,
       itemBuilder: (context, index) {
-        final player = room.players[index];
-        final isCurrentPlayer = player.id == playerId;
+        final player = widget.room.players[index];
+        final isCurrentPlayer = player.id == widget.playerId;
 
         return Container(
           margin: const EdgeInsets.only(bottom: 10),
@@ -190,41 +220,120 @@ class PlayingContent extends StatelessWidget {
           ),
           child: Row(
             children: [
-              CircleAvatar(
-                backgroundColor: isCurrentPlayer ? Colors.green : Colors.grey,
-                child: Text(
-                  player.name[0].toUpperCase(),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
+              // أفاتار اللاعب مع مؤشر الصوت
+              Stack(
+                children: [
+                  CircleAvatar(
+                    backgroundColor: isCurrentPlayer ? Colors.green : Colors.grey,
+                    child: Text(
+                      player.name[0].toUpperCase(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
                   ),
-                ),
+                  // مؤشر نشاط الصوت
+                  if (player.isConnected)
+                    Positioned(
+                      bottom: 0,
+                      right: 0,
+                      child: Container(
+                        width: 12,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white, width: 2),
+                        ),
+                      ),
+                    ),
+                ],
               ),
               const SizedBox(width: 15),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      player.name,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 16,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          player.name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 16,
+                          ),
+                        ),
+                        if (isCurrentPlayer) ...[
+                          const SizedBox(width: 5),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.green,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Text(
+                              'أنت',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
-                    Text(
-                      isCurrentPlayer ? 'أنت' : 'لاعب',
-                      style: const TextStyle(
-                        color: Colors.grey,
-                        fontSize: 12,
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          player.isConnected ? 'متصل' : 'غير متصل',
+                          style: TextStyle(
+                            color: player.isConnected ? Colors.green : Colors.red,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        if (player.isConnected && !isCurrentPlayer) ...[
+                          const SizedBox(width: 10),
+                          // مؤشر جودة الصوت
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.graphic_eq,
+                                size: 12,
+                                color: Colors.green.shade700,
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                'صوت نشط',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  color: Colors.green.shade700,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),
               ),
-              Icon(
-                player.isConnected ? Icons.mic : Icons.mic_off,
-                color: player.isConnected ? Colors.green : Colors.red,
+              // مؤشرات الحالة
+              Column(
+                children: [
+                  Icon(
+                    player.isConnected ? Icons.mic : Icons.mic_off,
+                    color: player.isConnected ? Colors.green : Colors.red,
+                    size: 20,
+                  ),
+                  if (player.id == widget.room.creatorId) ...[
+                    const SizedBox(height: 5),
+                    const Icon(Icons.star, color: Colors.amber, size: 16),
+                  ],
+                ],
               ),
             ],
           ),

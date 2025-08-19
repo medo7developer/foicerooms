@@ -11,6 +11,10 @@ class WebRTCService {
   Function(String, RTCSessionDescription)? onOfferCreated;
   Function(String, RTCSessionDescription)? onAnswerCreated;
 
+  bool hasPeer(String peerId) {
+    return _peers.containsKey(peerId);
+  }
+
   // Ice servers configuration
   final Map<String, dynamic> _configuration = {
     'iceServers': [
@@ -72,42 +76,6 @@ class WebRTCService {
     onAnswerCreated = onAnswer;
   }
 
-// تحديث دالة createOffer
-  Future<RTCSessionDescription> createOffer(String peerId) async {
-    try {
-      final pc = _peers[peerId];
-      if (pc == null) throw Exception('لا يوجد peer connection للمعرف $peerId');
-
-      final offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-
-      log('تم إنشاء العرض للـ peer $peerId');
-      onOfferCreated?.call(peerId, offer);
-      return offer;
-    } catch (e) {
-      log('خطأ في إنشاء العرض: $e');
-      rethrow;
-    }
-  }
-
-// تحديث دالة createAnswer
-  Future<RTCSessionDescription> createAnswer(String peerId) async {
-    try {
-      final pc = _peers[peerId];
-      if (pc == null) throw Exception('لا يوجد peer connection للمعرف $peerId');
-
-      final answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      log('تم إنشاء الإجابة للـ peer $peerId');
-      onAnswerCreated?.call(peerId, answer);
-      return answer;
-    } catch (e) {
-      log('خطأ في إنشاء الإجابة: $e');
-      rethrow;
-    }
-  }
-
 // إضافة دالة للاتصال بجميع اللاعبين في الغرفة
   Future<void> connectToAllPeers(List<String> peerIds, String myId) async {
     for (final peerId in peerIds) {
@@ -119,35 +87,76 @@ class WebRTCService {
     }
   }
 
-  // إنشاء اتصال peer - تم إصلاح المشكلة
+// 3. تعديل دالة createPeerConnectionForPeer بالكامل:
   Future<RTCPeerConnection> createPeerConnectionForPeer(String peerId) async {
     try {
-      // استخدام createPeerConnection من الـ package
-      final pc = await createPeerConnection(_configuration);
-
-      // إضافة المسار الصوتي المحلي
-      if (_localStream != null) {
-        _localStream!.getTracks().forEach((track) {
-          pc.addTrack(track, _localStream!);
-        });
-      }
-
-      // معالجة الأحداث
-      pc.onIceCandidate = (RTCIceCandidate candidate) {
-        _onIceCandidate(peerId, candidate);
+      // تحديث إعدادات ICE servers
+      final Map<String, dynamic> configuration = {
+        'iceServers': [
+          {'urls': 'stun:stun.l.google.com:19302'},
+          {'urls': 'stun:stun1.l.google.com:19302'},
+          {'urls': 'stun:stun2.l.google.com:19302'},
+          {'urls': 'stun:stun3.l.google.com:19302'},
+          {'urls': 'stun:stun4.l.google.com:19302'},
+        ],
+        'sdpSemantics': 'unified-plan',
+        'iceCandidatePoolSize': 10,
       };
 
-      pc.onTrack = (RTCTrackEvent event) {
-        if (event.streams.isNotEmpty) {
-          _onAddRemoteStream(peerId, event.streams.first);
+      final pc = await createPeerConnection(configuration);
+
+      // إضافة المسارات الصوتية المحلية أولاً
+      if (_localStream != null) {
+        final audioTracks = _localStream!.getAudioTracks();
+        for (final track in audioTracks) {
+          await pc.addTrack(track, _localStream!);
+          log('تم إضافة مسار صوتي للـ peer $peerId');
+        }
+      }
+
+      // معالجة ICE candidates
+      pc.onIceCandidate = (RTCIceCandidate candidate) {
+        if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
+          log('ICE candidate جديد للـ peer $peerId: ${candidate.candidate}');
+          onIceCandidateGenerated?.call(peerId, candidate);
         }
       };
 
+      // معالجة المسارات البعيدة
+      pc.onTrack = (RTCTrackEvent event) {
+        log('تم استقبال مسار من $peerId - النوع: ${event.track.kind}');
+        if (event.streams.isNotEmpty) {
+          final remoteStream = event.streams.first;
+          _remoteStreams[peerId] = remoteStream;
+
+          // تفعيل تشغيل الصوت البعيد
+          final audioTracks = remoteStream.getAudioTracks();
+          for (final track in audioTracks) {
+            track.enabled = true;
+            log('تم تفعيل مسار صوتي بعيد من $peerId');
+          }
+
+          log('تم حفظ المجرى البعيد لـ $peerId');
+        }
+      };
+
+      // معالجة حالات الاتصال
       pc.onConnectionState = (RTCPeerConnectionState state) {
         log('حالة الاتصال مع $peerId: $state');
+        if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          log('✓ تم الاتصال بنجاح مع $peerId');
+        } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+          log('✗ فشل الاتصال مع $peerId');
+        }
+      };
+
+      // معالجة ICE connection state
+      pc.onIceConnectionState = (RTCIceConnectionState state) {
+        log('حالة ICE مع $peerId: $state');
       };
 
       _peers[peerId] = pc;
+      log('تم إنشاء peer connection للـ $peerId');
       return pc;
     } catch (e) {
       log('خطأ في إنشاء peer connection: $e');
@@ -155,17 +164,134 @@ class WebRTCService {
     }
   }
 
-  // تعيين الوصف البعيد
-  Future<void> setRemoteDescription(String peerId, RTCSessionDescription description) async {
+  // 4. إضافة دالة للتحقق من المسارات الصوتية:
+  void checkAudioTracks() {
+    if (_localStream != null) {
+      final tracks = _localStream!.getAudioTracks();
+      log('المسارات الصوتية المحلية: ${tracks.length}');
+      for (int i = 0; i < tracks.length; i++) {
+        final track = tracks[i];
+        log('المسار $i: enabled=${track.enabled}, kind=${track.kind}, id=${track.id}');
+      }
+    }
+
+    for (final entry in _remoteStreams.entries) {
+      final tracks = entry.value.getAudioTracks();
+      log('المسارات البعيدة من ${entry.key}: ${tracks.length}');
+    }
+  }
+
+// 5. تحديث دالة createOffer:
+  Future<RTCSessionDescription> createOffer(String peerId) async {
     try {
       final pc = _peers[peerId];
       if (pc == null) throw Exception('لا يوجد peer connection للمعرف $peerId');
 
-      await pc.setRemoteDescription(description);
-      log('تم تعيين الوصف البعيد للـ peer $peerId');
+      // إعدادات SDP محسنة
+      final Map<String, dynamic> offerOptions = {
+        'offerToReceiveAudio': true,
+        'offerToReceiveVideo': false,
+        'iceRestart': false,
+      };
+
+      final offer = await pc.createOffer(offerOptions);
+      await pc.setLocalDescription(offer);
+
+      log('تم إنشاء العرض للـ peer $peerId');
+      log('SDP Offer: ${offer.sdp?.substring(0, 100)}...');
+
+      onOfferCreated?.call(peerId, offer);
+      return offer;
+    } catch (e) {
+      log('خطأ في إنشاء العرض: $e');
+      rethrow;
+    }
+  }
+
+// 6. تحديث دالة createAnswer:
+  Future<RTCSessionDescription> createAnswer(String peerId) async {
+    try {
+      final pc = _peers[peerId];
+      if (pc == null) throw Exception('لا يوجد peer connection للمعرف $peerId');
+
+      final Map<String, dynamic> answerOptions = {
+        'offerToReceiveAudio': true,
+        'offerToReceiveVideo': false,
+      };
+
+      final answer = await pc.createAnswer(answerOptions);
+      await pc.setLocalDescription(answer);
+
+      log('تم إنشاء الإجابة للـ peer $peerId');
+      log('SDP Answer: ${answer.sdp?.substring(0, 100)}...');
+
+      onAnswerCreated?.call(peerId, answer);
+      return answer;
+    } catch (e) {
+      log('خطأ في إنشاء الإجابة: $e');
+      rethrow;
+    }
+  }
+
+// 7. تحديث دالة setRemoteDescription:
+  Future<void> setRemoteDescription(String peerId, RTCSessionDescription description) async {
+    try {
+      final pc = _peers[peerId];
+      if (pc == null) {
+        // إنشاء peer connection إذا لم يكن موجوداً
+        await createPeerConnectionForPeer(peerId);
+        final newPc = _peers[peerId];
+        if (newPc == null) throw Exception('فشل في إنشاء peer connection');
+      }
+
+      await _peers[peerId]!.setRemoteDescription(description);
+      log('تم تعيين الوصف البعيد للـ peer $peerId - النوع: ${description.type}');
     } catch (e) {
       log('خطأ في تعيين الوصف البعيد: $e');
       rethrow;
+    }
+  }
+
+// 8. تحديث دالة toggleMicrophone:
+  void toggleMicrophone() {
+    if (_localStream != null) {
+      final audioTracks = _localStream!.getAudioTracks();
+      if (audioTracks.isNotEmpty) {
+        final track = audioTracks.first;
+        track.enabled = !track.enabled;
+        log('الميكروفون ${track.enabled ? 'مفعل' : 'مكتوم'}');
+
+        // إشعار جميع الـ peers بتغيير حالة الصوت
+        for (final entry in _peers.entries) {
+          log('تحديث حالة الصوت للـ peer ${entry.key}');
+        }
+      }
+    }
+  }
+
+// 9. إضافة دوال مساعدة للتشخيص:
+  void debugConnectionStates() {
+    log('=== حالة الاتصالات WebRTC ===');
+    log('عدد الـ peers: ${_peers.length}');
+    log('عدد المجاري البعيدة: ${_remoteStreams.length}');
+
+    for (final entry in _peers.entries) {
+      final pc = entry.value;
+      log('Peer ${entry.key}: connectionState=${pc.connectionState}, iceConnectionState=${pc.iceConnectionState}');
+    }
+
+    checkAudioTracks();
+  }
+
+// 10. دالة لإعادة تشغيل الصوت البعيد:
+  void enableRemoteAudio() {
+    for (final entry in _remoteStreams.entries) {
+      final stream = entry.value;
+      final audioTracks = stream.getAudioTracks();
+      for (final track in audioTracks) {
+        track.enabled = true;
+      }
+      log('تم تفعيل الصوت البعيد لـ ${entry.key}');
     }
   }
 
@@ -180,18 +306,6 @@ class WebRTCService {
     } catch (e) {
       log('خطأ في إضافة ICE candidate: $e');
       rethrow;
-    }
-  }
-
-  // كتم/إلغاء كتم الميكروفون
-  void toggleMicrophone() {
-    if (_localStream != null) {
-      final audioTracks = _localStream!.getAudioTracks();
-      if (audioTracks.isNotEmpty) {
-        final isEnabled = audioTracks.first.enabled;
-        audioTracks.first.enabled = !isEnabled;
-        log('الميكروفون ${!isEnabled ? 'مفعل' : 'مكتوم'}');
-      }
     }
   }
 
