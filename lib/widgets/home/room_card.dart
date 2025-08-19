@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../providers/game_provider.dart';
+import '../../services/player_service.dart';
 import '../../services/supabase_service.dart';
 
 class RoomCard extends StatelessWidget {
