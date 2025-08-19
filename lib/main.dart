@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
 import 'services/supabase_service.dart';
-import 'services/webrtc_service.dart';
+import 'services/webrtc_services/webrtc_service.dart';
 import 'services/realtime_manager.dart'; // إضافة جديدة
 import 'providers/game_provider.dart';
 import 'screens/home_screen.dart';
