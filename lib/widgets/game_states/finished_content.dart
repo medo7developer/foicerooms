@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../providers/game_provider.dart';
+import '../../models/experience_models.dart';
+import '../../models/game_room_model.dart';
+import '../../models/player_model.dart';
 
 class FinishedContent extends StatelessWidget {
   final GameRoom room;
@@ -16,6 +19,9 @@ class FinishedContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final wasPlayerSpy = currentPlayer.role == PlayerRole.spy;
+    final gameProvider = context.watch<GameProvider>();
+    final rewards = gameProvider.lastGameRewards ?? [];
+    final playerStats = gameProvider.currentPlayerStats;
 
     // تحديد الفائز بناءً على بيانات الغرفة
     bool spyWon = false;
@@ -60,6 +66,18 @@ class FinishedContent extends StatelessWidget {
 
             const SizedBox(height: 30),
             _buildBackToHomeButton(context),
+
+            // عرض المكافآت الجديدة
+            if (rewards.isNotEmpty) ...[
+              const SizedBox(height: 20),
+              _buildRewardsSection(rewards),
+            ],
+
+            // عرض الإحصائيات
+            if (playerStats != null) ...[
+              const SizedBox(height: 20),
+              _buildStatsSection(playerStats),
+            ],
           ],
         ),
       ),
@@ -77,11 +95,12 @@ class FinishedContent extends StatelessWidget {
     // في حالة عدم وجود الجاسوس في القائمة الحالية (تم إقصاؤه)
     final spyPlayer = allPlayersIncludingEliminated.firstWhere(
           (p) => p.id == room.revealedSpyId,
-      orElse: () => Player(
-        id: room.revealedSpyId!,
-        name: 'الجاسوس المكشوف',
-        role: PlayerRole.spy,
-      ),
+      orElse: () =>
+          Player(
+            id: room.revealedSpyId!,
+            name: 'الجاسوس المكشوف',
+            role: PlayerRole.spy,
+          ),
     );
 
     spyName = spyPlayer.name;
@@ -193,6 +212,157 @@ class FinishedContent extends StatelessWidget {
         ),
       ),
       child: const Text('العودة للرئيسية'),
+    );
+  }
+
+  Widget _buildRewardsSection(List<GameReward> rewards) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Colors.amber.shade100, Colors.amber.shade200],
+        ),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.amber, width: 2),
+      ),
+      child: Column(
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.emoji_events, color: Colors.amber, size: 30),
+              SizedBox(width: 10),
+              Text(
+                'المكافآت المكتسبة',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.amber,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 15),
+          ...rewards.map((reward) => _buildRewardItem(reward)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRewardItem(GameReward reward) {
+    IconData icon;
+    Color color;
+
+    switch (reward.type) {
+      case RewardType.xp:
+        icon = Icons.stars;
+        color = Colors.blue;
+        break;
+      case RewardType.badge:
+        icon = BadgeUtils.getBadgeIcon(reward.badgeType!);
+        color = BadgeUtils.getBadgeColor(reward.badgeType!);
+        break;
+      case RewardType.title:
+        icon = Icons.military_tech;
+        color = Colors.purple;
+        break;
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Icon(icon, color: color, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              reward.description,
+              style: const TextStyle(fontSize: 14),
+            ),
+          ),
+          if (reward.xpAmount > 0)
+            Text(
+              '+${reward.xpAmount} XP',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                color: Colors.blue,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatsSection(PlayerStats stats) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: Colors.blue.shade50,
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.blue.shade200),
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              Icon(Icons.person, color: Colors.blue.shade600, size: 24),
+              const SizedBox(width: 10),
+              Text(
+                'مستوى ${stats.level}',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue.shade700,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${stats.totalXP} XP',
+                style: TextStyle(
+                  fontSize: 14,
+                  color: Colors.blue.shade600,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildStatItem('الانتصارات', '${stats.wins}', Colors.green),
+              _buildStatItem(
+                  'معدل الفوز', '${stats.winRate.toStringAsFixed(1)}%',
+                  Colors.orange),
+              _buildStatItem(
+                  'الشارات', '${stats.badges.length}', Colors.purple),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatItem(String label, String value, Color color) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.grey.shade600,
+          ),
+        ),
+      ],
     );
   }
 }

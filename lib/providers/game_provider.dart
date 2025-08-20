@@ -2,117 +2,14 @@ import 'dart:developer';
 
 import 'package:flutter/material.dart';
 
+import '../models/experience_models.dart';
+import '../models/game_room_model.dart';
+import '../models/player_model.dart';
+import '../services/experience_service.dart';
 import '../services/supabase_service.dart';
 
 enum GameState { waiting, playing, voting, continueVoting, finished }
 enum PlayerRole { normal, spy }
-
-class Player {
-  final String id;
-  final String name;
-  bool isConnected;
-  bool isVoted;
-  int votes;
-  PlayerRole role;
-
-  Player({
-    required this.id,
-    required this.name,
-    this.isConnected = false,
-    this.isVoted = false,
-    this.votes = 0,
-    this.role = PlayerRole.normal,
-  });
-
-  Player copyWith({
-    String? id,
-    String? name,
-    bool? isConnected,
-    bool? isVoted,
-    int? votes,
-    PlayerRole? role,
-  }) {
-    return Player(
-      id: id ?? this.id,
-      name: name ?? this.name,
-      isConnected: isConnected ?? this.isConnected,
-      isVoted: isVoted ?? this.isVoted,
-      votes: votes ?? this.votes,
-      role: role ?? this.role,
-    );
-  }
-}
-
-// تحديثات في ملف: lib/providers/game_provider.dart
-
-// في كلاس GameRoom، أضف الحقل التالي:
-class GameRoom {
-  final String id;
-  final String name;
-  final String creatorId;
-  final int maxPlayers;
-  final int totalRounds;
-  final int roundDuration;
-  List<Player> players;
-  GameState state;
-  int currentRound;
-  String? currentWord;
-  String? spyId;
-  String? revealedSpyId;
-  String? winner; // *** حقل جديد للفائز ***
-  DateTime? roundStartTime;
-
-  GameRoom({
-    required this.id,
-    required this.name,
-    required this.creatorId,
-    required this.maxPlayers,
-    required this.totalRounds,
-    required this.roundDuration,
-    this.players = const [],
-    this.state = GameState.waiting,
-    this.currentRound = 0,
-    this.currentWord,
-    this.spyId,
-    this.revealedSpyId,
-    this.winner, // *** إضافة الحقل الجديد ***
-    this.roundStartTime,
-  });
-
-  GameRoom copyWith({
-    String? id,
-    String? name,
-    String? creatorId,
-    int? maxPlayers,
-    int? totalRounds,
-    int? roundDuration,
-    List<Player>? players,
-    GameState? state,
-    int? currentRound,
-    String? currentWord,
-    String? spyId,
-    String? revealedSpyId,
-    String? winner, // *** إضافة الحقل الجديد ***
-    DateTime? roundStartTime,
-  }) {
-    return GameRoom(
-      id: id ?? this.id,
-      name: name ?? this.name,
-      creatorId: creatorId ?? this.creatorId,
-      maxPlayers: maxPlayers ?? this.maxPlayers,
-      totalRounds: totalRounds ?? this.totalRounds,
-      roundDuration: roundDuration ?? this.roundDuration,
-      players: players ?? this.players,
-      state: state ?? this.state,
-      currentRound: currentRound ?? this.currentRound,
-      currentWord: currentWord ?? this.currentWord,
-      spyId: spyId ?? this.spyId,
-      revealedSpyId: revealedSpyId ?? this.revealedSpyId,
-      winner: winner ?? this.winner, // *** إضافة الحقل الجديد ***
-      roundStartTime: roundStartTime ?? this.roundStartTime,
-    );
-  }
-}
 
 class GameProvider extends ChangeNotifier {
   GameRoom? _currentRoom;
@@ -121,7 +18,13 @@ class GameProvider extends ChangeNotifier {
   SupabaseService? _supabaseService;
 // إضافة متغير للتحكم في حالة التبديل:
   bool _isTransitioning = false;
-  DateTime? _lastStateChange;
+  ExperienceService? _experienceService;
+  PlayerStats? _currentPlayerStats;
+  List<GameReward>? _lastGameRewards;
+
+  // Getters جديدة
+  PlayerStats? get currentPlayerStats => _currentPlayerStats;
+  List<GameReward>? get lastGameRewards => _lastGameRewards;
 
   // كلمات اللعبة
   final List<String> _gameWords = [
@@ -968,7 +871,63 @@ class GameProvider extends ChangeNotifier {
     }
   }
 
-  // إضافة دالة جديدة للتحديث المباشر:
+  void setExperienceService(ExperienceService service) {
+    _experienceService = service;
+  }
+
+// تحديث دالة loadPlayerStats في GameProvider
+  Future<void> loadPlayerStats(String playerId) async {
+    if (_experienceService == null) return;
+
+    try {
+      // تمرير اسم اللاعب الحالي إذا كان متاحاً
+      final playerName = _currentPlayer?.name ?? 'لاعب مجهول';
+      _currentPlayerStats = await _experienceService!.getPlayerStats(playerId, playerName: playerName);
+      notifyListeners();
+    } catch (e) {
+      debugPrint('خطأ في تحميل إحصائيات اللاعب: $e');
+    }
+  }
+
+  Future<void> processGameEndWithRewards() async {
+    if (_currentRoom == null || _experienceService == null) return;
+
+    try {
+      // تحديد الفائز من بيانات الغرفة
+      String winner = 'normal_players';
+      if (_currentRoom!.winner == 'spy') {
+        winner = 'spy';
+      }
+
+      // معالجة مكافآت جميع اللاعبين مع تمرير الأسماء
+      final allRewards = await _experienceService!.processRoomGameResult(
+        room: _currentRoom!,
+        winner: winner,
+        revealedSpyId: _currentRoom!.revealedSpyId,
+      );
+
+      // احفظ مكافآت اللاعب الحالي
+      if (_currentPlayer != null && allRewards.containsKey(_currentPlayer!.id)) {
+        _lastGameRewards = allRewards[_currentPlayer!.id];
+
+        // إعادة تحميل الإحصائيات المحدثة
+        await loadPlayerStats(_currentPlayer!.id);
+      }
+
+      debugPrint('تم معالجة مكافآت اللعبة لـ ${allRewards.length} لاعبين');
+      notifyListeners();
+    } catch (e) {
+      debugPrint('خطأ في معالجة مكافآت اللعبة: $e');
+    }
+  }
+
+  /// تنظيف المكافآت بعد عرضها
+  void clearLastGameRewards() {
+    _lastGameRewards = null;
+    notifyListeners();
+  }
+
+// إضافة دالة جديدة للتحديث المباشر:
   void notifyRoomUpdate() {
     notifyListeners();
     debugPrint('تم إشعار المستمعين بتحديث الغرفة');

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../../../providers/game_provider.dart';
+import '../../models/game_room_model.dart';
+import '../../models/player_model.dart';
 
 // إضافة متغير للتحكم في اتصالات WebRTC في بداية الكلاس:
 class PlayingContent extends StatefulWidget {

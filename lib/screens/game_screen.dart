@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'dart:async';
 
+import '../models/game_room_model.dart';
+import '../models/player_model.dart';
 import '../providers/game_provider.dart';
 import '../services/realtime_manager.dart';
 import '../services/webrtc_services/webrtc_service.dart';

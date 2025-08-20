@@ -3,6 +3,8 @@ import '../../providers/game_provider.dart';
 import '../../services/player_service.dart';
 import '../../services/supabase_service.dart';
 import 'room_card.dart';
+import '../../models/game_room_model.dart';
+import '../../models/player_model.dart';
 
 class RoomsListView extends StatelessWidget {
   final List<GameRoom> rooms;

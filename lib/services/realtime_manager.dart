@@ -3,6 +3,8 @@
 import 'dart:async';
 import 'dart:developer';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../models/game_room_model.dart';
+import '../models/player_model.dart';
 import '../providers/game_provider.dart';
 
 class RealtimeManager {

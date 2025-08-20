@@ -1,5 +1,6 @@
 import 'dart:developer';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import '../models/game_room_model.dart';
 import '../providers/game_provider.dart';
 
 // استيراد الخدمات المقسمة

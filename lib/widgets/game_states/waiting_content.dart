@@ -4,6 +4,8 @@ import 'dart:async';
 
 import '../../../providers/game_provider.dart';
 import '../../../services/supabase_service.dart';
+import '../../models/game_room_model.dart';
+import '../../models/player_model.dart';
 
 class WaitingContent extends StatefulWidget {
   final GameRoom room;

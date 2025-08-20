@@ -3,6 +3,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
+import 'package:voice_rooms_app/services/experience_service.dart';
 import 'services/supabase_service.dart';
 import 'services/webrtc_services/webrtc_service.dart';
 import 'services/realtime_manager.dart'; // إضافة جديدة
@@ -34,6 +35,7 @@ class VoiceRoomsApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => GameProvider()),
         Provider(create: (_) => SupabaseService()),
+        Provider(create: (_) => ExperienceService()),
         Provider(create: (_) => WebRTCService()),
         Provider(create: (_) => RealtimeManager()),
       ],

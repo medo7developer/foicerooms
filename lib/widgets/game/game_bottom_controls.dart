@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import '../../providers/game_provider.dart';
+import '../../models/game_room_model.dart';
 
 class GameBottomControls extends StatelessWidget {
   final GameRoom room;

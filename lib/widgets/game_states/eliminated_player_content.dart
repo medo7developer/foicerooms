@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../providers/game_provider.dart';
+import '../../models/game_room_model.dart';
+import '../../models/player_model.dart';
 
 class EliminatedPlayerContent extends StatelessWidget {
   final GameRoom room;

@@ -372,4 +372,23 @@ class GameLogicService {
     }
   }
 
+  /// إنهاء اللعبة مع معالجة المكافآت
+  Future<void> endGameWithRewards(String roomId, String winner, String? spyId) async {
+    try {
+      // إنهاء اللعبة عادي
+      await endGameAndRevealSpy(roomId, winner, spyId);
+
+      // إشارة لمعالجة المكافآت في المقدمة
+      await _client.from('rooms').update({
+        'process_rewards': true,
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', roomId);
+
+      log('تم تحديد اللعبة لمعالجة المكافآت: $roomId');
+    } catch (e) {
+      log('خطأ في إنهاء اللعبة مع المكافآت: $e');
+      rethrow;
+    }
+  }
+
 }

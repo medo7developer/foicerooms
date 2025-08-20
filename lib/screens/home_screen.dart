@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:voice_rooms_app/screens/stats_screen.dart';
 import 'dart:developer';
+import '../models/game_room_model.dart';
 import '../providers/game_provider.dart';
 import '../services/player_service.dart';
 import '../services/supabase_service.dart';
@@ -597,6 +599,26 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   ),
                 ),
               ),
+              // إضافة هذا في HomeScreen في منطقة الأزرار
+
+              FloatingActionButton.extended(
+                onPressed: () {
+                  if (_playerId != null) {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => StatsScreen(playerId: _playerId!),
+                      ),
+                    );
+                  }
+                },
+                backgroundColor: Colors.purple,
+                icon: const Icon(Icons.leaderboard, color: Colors.white),
+                label: const Text(
+                  'الإحصائيات',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
             ],
           ),
         ),
@@ -607,6 +629,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         isInRoom: _currentUserStatus?.inRoom == true,
         onCreateRoom: _onCreateRoom,
       ),
+
     );
   }
 }
