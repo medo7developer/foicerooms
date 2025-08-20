@@ -70,30 +70,59 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
         return;
       }
 
-      // إنشاء الغرفة في GameProvider بالمعرف الصحيح مباشرة
-      final room = GameRoom(
-        id: roomId, // استخدام معرف قاعدة البيانات مباشرة
-        name: _roomNameController.text.trim(),
-        creatorId: widget.playerId,
-        maxPlayers: _maxPlayers,
-        totalRounds: _totalRounds,
-        roundDuration: _roundDuration,
-        players: [
-          Player(
-            id: widget.playerId,
-            name: widget.playerName,
-            isConnected: true,
-          )
-        ],
+      // انتظار قصير للتأكد من إنشاء البيانات في قاعدة البيانات
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // جلب بيانات الغرفة من الخادم للتأكد من صحتها
+      final serverRoom = await supabaseService.getRoomById(roomId);
+
+      GameRoom localRoom;
+      if (serverRoom != null) {
+        // استخدام بيانات الخادم
+        localRoom = serverRoom;
+        debugPrint('✅ تم جلب بيانات الغرفة من الخادم');
+      } else {
+        // إنشاء بيانات محلية كخطة احتياطية
+        localRoom = GameRoom(
+          id: roomId,
+          name: _roomNameController.text.trim(),
+          creatorId: widget.playerId,
+          maxPlayers: _maxPlayers,
+          totalRounds: _totalRounds,
+          roundDuration: _roundDuration,
+          players: [
+            Player(
+              id: widget.playerId,
+              name: widget.playerName,
+              isConnected: true,
+            )
+          ],
+        );
+        debugPrint('⚠️ تم إنشاء بيانات محلية للغرفة');
+      }
+
+      // تحديث GameProvider بالبيانات الصحيحة
+      gameProvider.currentRoom = localRoom;
+      gameProvider.currentPlayer = localRoom.players.firstWhere(
+            (p) => p.id == widget.playerId,
+        orElse: () => Player(
+          id: widget.playerId,
+          name: widget.playerName,
+          isConnected: true,
+        ),
       );
 
-      // تعيين الغرفة في GameProvider
-      gameProvider.currentRoom = room;
-      gameProvider.currentPlayer = room.players.first;
+      // إضافة الغرفة لقائمة الغرف المتاحة محلياً
+      gameProvider.availableRooms.add(localRoom);
+
+      // إشعار فوري بالتحديث
       gameProvider.notifyListeners();
 
       // عرض رسالة نجاح
       _showSnackBar('تم إنشاء الغرفة بنجاح!');
+
+      // تأخير قصير للتأكد من اكتمال العمليات
+      await Future.delayed(const Duration(milliseconds: 200));
 
       // الانتقال لشاشة اللعبة
       Navigator.pushReplacement(
@@ -105,7 +134,47 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
 
     } catch (e) {
       setState(() => _isCreating = false);
-      debugPrint('خطأ في إنشاء الغرفة: $e');
+      debugPrint('❌ خطأ في إنشاء الغرفة: $e');
+
+      // التحقق من إنشاء الغرفة رغم الخطأ
+      try {
+        final supabaseService = context.read<SupabaseService>();
+        final rooms = await supabaseService.getAvailableRooms();
+        final createdRoom = rooms.firstWhere(
+              (room) => room.creatorId == widget.playerId && room.name == _roomNameController.text.trim(),
+          orElse: () => GameRoom(id: '', name: '', creatorId: '', maxPlayers: 0, totalRounds: 0, roundDuration: 0),
+        );
+
+        if (createdRoom.id.isNotEmpty) {
+          // الغرفة تم إنشاؤها بنجاح رغم الخطأ
+          debugPrint('✅ تم العثور على الغرفة المنشأة رغم الخطأ');
+
+          final gameProvider = context.read<GameProvider>();
+          gameProvider.currentRoom = createdRoom;
+          gameProvider.currentPlayer = createdRoom.players.firstWhere(
+                (p) => p.id == widget.playerId,
+            orElse: () => Player(
+              id: widget.playerId,
+              name: widget.playerName,
+              isConnected: true,
+            ),
+          );
+          gameProvider.notifyListeners();
+
+          _showSnackBar('تم إنشاء الغرفة بنجاح!');
+
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => GameScreen(playerId: widget.playerId),
+            ),
+          );
+          return;
+        }
+      } catch (recoveryError) {
+        debugPrint('❌ فشل في محاولة الاسترداد: $recoveryError');
+      }
+
       _showSnackBar('حدث خطأ أثناء إنشاء الغرفة، يرجى المحاولة مرة أخرى', isError: true);
     }
   }

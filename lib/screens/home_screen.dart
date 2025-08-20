@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
@@ -33,6 +35,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   String? _playerId;
   String? _savedPlayerName;
   UserStatus? _currentUserStatus;
+  Timer? _autoRefreshTimer; // إضافة مؤقت للتحديث التلقائي
+  bool _isRefreshing = false; // منع التحديث المتداخل
 
   late TabController _tabController;
   late AnimationController _refreshController;
@@ -42,6 +46,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _startAutoRefresh();
     _refreshController = AnimationController(
       duration: const Duration(milliseconds: 1000),
       vsync: this,
@@ -60,6 +65,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _refreshController.dispose();
     _floatingController.dispose();
     _nameController.dispose();
+    _autoRefreshTimer?.cancel();
     super.dispose();
   }
 
@@ -72,6 +78,346 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     await _initializePlayerStats();
 
     await _loadAvailableRooms();
+  }
+
+  // إضافة دالة للتحديث التلقائي
+  void _startAutoRefresh() {
+    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (mounted && !_isRefreshing && !_isLoading) {
+        _silentRefresh();
+      }
+    });
+  }
+
+  // تحديث صامت بدون مؤشرات تحميل
+  Future<void> _silentRefresh() async {
+    if (_isRefreshing || _playerId == null) return;
+
+    _isRefreshing = true;
+    try {
+      // تحديث حالة المستخدم
+      final supabaseService = context.read<SupabaseService>();
+      final newStatus = await supabaseService.checkUserStatus(_playerId!);
+
+      // تحديث قائمة الغرف
+      final allRooms = await supabaseService.getAvailableRooms();
+
+      // تصفية الغرف
+      final availableRooms = <GameRoom>[];
+      final myRooms = <GameRoom>[];
+
+      for (final room in allRooms) {
+        if (room.creatorId == _playerId) {
+          myRooms.add(room);
+        } else {
+          final isPlayerInRoom = room.players.any((player) => player.id == _playerId);
+          if (!isPlayerInRoom) {
+            availableRooms.add(room);
+          }
+        }
+      }
+      // تحديث الواجهة فقط في حالة وجود تغييرات
+      if (_hasChanges(newStatus, availableRooms, myRooms)) {
+        if (mounted) {
+          setState(() {
+            _currentUserStatus = newStatus;
+            _availableRooms = availableRooms;
+            _myRooms = myRooms;
+          });
+        }
+      }
+    } catch (e) {
+      log('خطأ في التحديث الصامت: $e');
+    } finally {
+      _isRefreshing = false;
+    }
+  }
+
+  // فحص التغييرات لتجنب التحديث غير الضروري
+  bool _hasChanges(UserStatus? newStatus, List<GameRoom> newAvailable, List<GameRoom> newMy) {
+    // فحص تغيير حالة المستخدم
+    if (_currentUserStatus?.inRoom != newStatus?.inRoom ||
+        _currentUserStatus?.roomId != newStatus?.roomId) {
+      return true;
+    }
+
+    // فحص تغيير عدد الغرف
+    if (_availableRooms.length != newAvailable.length ||
+        _myRooms.length != newMy.length) {
+      return true;
+    }
+
+    // فحص تغيير عدد اللاعبين في الغرف
+    for (int i = 0; i < _availableRooms.length && i < newAvailable.length; i++) {
+      if (_availableRooms[i].players.length != newAvailable[i].players.length) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // تحسين دالة _loadAvailableRooms
+  Future<void> _loadAvailableRooms({bool showLoading = true}) async {
+    if (_playerId == null || _isRefreshing) {
+      log('معرف اللاعب غير متاح أو جاري التحديث');
+      return;
+    }
+
+    if (showLoading) {
+      setState(() => _isLoading = true);
+      _refreshController.forward();
+    }
+
+    _isRefreshing = true;
+
+    try {
+      final supabaseService = context.read<SupabaseService>();
+      final allRooms = await supabaseService.getAvailableRooms();
+
+      // تصفية الغرف بناءً على معرف اللاعب
+      final availableRooms = <GameRoom>[];
+      final myRooms = <GameRoom>[];
+
+      for (final room in allRooms) {
+        if (room.creatorId == _playerId) {
+          myRooms.add(room);
+        } else {
+          // التأكد من أن اللاعب ليس في هذه الغرفة
+          final isPlayerInRoom = room.players.any((player) => player.id == _playerId);
+          if (!isPlayerInRoom) {
+            availableRooms.add(room);
+          }
+        }
+      }
+
+      if (mounted) {
+        setState(() {
+          _availableRooms = availableRooms;
+          _myRooms = myRooms;
+          if (showLoading) _isLoading = false;
+        });
+      }
+
+      log('تم تحميل ${allRooms.length} غرفة، منها ${myRooms.length} غرف خاصة بي و ${availableRooms.length} غرف متاحة');
+    } catch (e) {
+      log('خطأ في تحميل الغرف: $e');
+      if (mounted && showLoading) {
+        setState(() => _isLoading = false);
+      }
+    } finally {
+      if (showLoading) {
+        _refreshController.reset();
+      }
+      _isRefreshing = false;
+    }
+  }
+
+  // تحسين دالة _joinRoom
+  Future<void> _joinRoom(GameRoom room) async {
+    // التحقق من صحة البيانات
+    if (_nameController.text.trim().isEmpty) {
+      _showSnackBar('يرجى إدخال اسمك أولاً', isError: true);
+      return;
+    }
+
+    if (_playerId == null) {
+      _showSnackBar('خطأ في معرف اللاعب، يرجى إعادة تشغيل التطبيق', isError: true);
+      return;
+    }
+
+    // التحقق من حالة المستخدم الحالية
+    if (_currentUserStatus?.inRoom == true) {
+      _showSnackBar('يجب مغادرة الغرفة الحالية أولاً', isError: true);
+      return;
+    }
+
+    await _savePlayerName(_nameController.text.trim());
+
+    // عرض مؤشر التحميل
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 20),
+            Text('جاري الانضمام لغرفة "${room.name}"...'),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      final gameProvider = context.read<GameProvider>();
+      final supabaseService = context.read<SupabaseService>();
+
+      // محاولة الانضمام في الخادم أولاً
+      final result = await supabaseService.joinRoom(
+        room.id,
+        _playerId!,
+        _nameController.text.trim(),
+      );
+
+      // إغلاق مؤشر التحميل
+      Navigator.pop(context);
+
+      if (result.success) {
+        // انتظار قصير للتأكد من تحديث قاعدة البيانات
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        // جلب بيانات الغرفة المحدثة من الخادم
+        final updatedRoom = await supabaseService.getRoomById(room.id);
+
+        if (updatedRoom != null) {
+          // محاولة الانضمام في GameProvider بالبيانات المحدثة
+          final success = gameProvider.joinRoom(updatedRoom.id, _playerId!, _nameController.text.trim());
+
+          if (success) {
+            // تحديث حالة المستخدم فوراً
+            setState(() {
+              _currentUserStatus = UserStatus(
+                inRoom: true,
+                roomId: updatedRoom.id,
+                roomName: updatedRoom.name,
+                isOwner: false,
+                roomState: 'waiting',
+              );
+            });
+
+            // تحديث قوائم الغرف فوراً
+            await _loadAvailableRooms(showLoading: false);
+
+            // الانتقال لشاشة اللعبة
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => GameScreen(playerId: _playerId!),
+              ),
+            ).then((_) {
+              // عند العودة من شاشة اللعبة، تحديث الحالة
+              _checkUserStatus();
+              _loadAvailableRooms(showLoading: false);
+            });
+          } else {
+            _showSnackBar('انضممت للغرفة في الخادم، جاري تحديث البيانات...', isError: false);
+            // تحديث فوري للبيانات
+            await _checkUserStatus();
+            await _loadAvailableRooms(showLoading: false);
+          }
+        } else {
+          _showSnackBar('انضممت للغرفة، جاري تحديث البيانات...', isError: false);
+          await _checkUserStatus();
+          await _loadAvailableRooms(showLoading: false);
+        }
+      } else {
+        _showSnackBar(result.reason, isError: true);
+
+        // إذا كان المستخدم في غرفة أخرى، تحديث الحالة
+        if (result.existingRoomId != null) {
+          await _checkUserStatus();
+        }
+      }
+    } catch (e) {
+      // إغلاق مؤشر التحميل في حالة الخطأ
+      Navigator.pop(context);
+      log('خطأ في الانضمام للغرفة: $e');
+      _showSnackBar('خطأ في الاتصال، يرجى المحاولة مرة أخرى', isError: true);
+    }
+  }
+
+  // تحسين دالة _onRefresh
+  void _onRefresh() {
+    log('تحديث يدوي للبيانات');
+    _autoRefreshTimer?.cancel(); // إيقاف التحديث التلقائي مؤقتاً
+
+    Future.wait([
+      _checkUserStatus(),
+      _loadAvailableRooms(),
+    ]).then((_) {
+      // إعادة تشغيل التحديث التلقائي بعد التحديث اليدوي
+      _startAutoRefresh();
+    });
+  }
+
+  // تحسين دالة _onCreateRoom
+  Future<void> _onCreateRoom() async {
+    if (_nameController.text.trim().isEmpty) {
+      _showSnackBar('يرجى إدخال اسمك أولاً', isError: true);
+      return;
+    }
+
+    if (_currentUserStatus?.inRoom == true) {
+      _showSnackBar('يجب مغادرة الغرفة الحالية أولاً', isError: true);
+      return;
+    }
+
+    if (_playerId == null) {
+      _showSnackBar('خطأ في معرف اللاعب، يرجى إعادة تشغيل التطبيق', isError: true);
+      return;
+    }
+
+    await _savePlayerName(_nameController.text.trim());
+
+    final result = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => CreateRoomScreen(
+          playerId: _playerId!,
+          playerName: _nameController.text.trim(),
+        ),
+      ),
+    );
+
+    // تحديث فوري بعد العودة من إنشاء الغرفة
+    if (result == true) {
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _checkUserStatus();
+      await _loadAvailableRooms(showLoading: false);
+    }
+  }
+
+  // تحسين دالة _leaveCurrentRoom
+  Future<void> _leaveCurrentRoom() async {
+    if (_playerId == null) return;
+
+    try {
+      final supabaseService = context.read<SupabaseService>();
+      await supabaseService.leaveRoom(_playerId!);
+
+      // تحديث فوري للحالة
+      setState(() => _currentUserStatus = UserStatus.free);
+      _showSnackBar('تم مغادرة الغرفة');
+
+      // تحديث قوائم الغرف فوراً
+      await Future.delayed(const Duration(milliseconds: 300));
+      await _loadAvailableRooms(showLoading: false);
+    } catch (e) {
+      log('خطأ في مغادرة الغرفة: $e');
+      _showSnackBar('فشل في مغادرة الغرفة', isError: true);
+    }
+  }
+
+  // تحسين دالة _deleteRoom
+  Future<void> _deleteRoom(GameRoom room) async {
+    final confirmed = await _showDeleteDialog(room);
+    if (confirmed == true && _playerId != null) {
+      final supabaseService = context.read<SupabaseService>();
+      final success = await supabaseService.deleteRoom(room.id, _playerId!);
+
+      if (success) {
+        _showSnackBar('تم حذف الغرفة بنجاح');
+
+        // تحديث فوري للقوائم
+        await Future.delayed(const Duration(milliseconds: 300));
+        await _loadAvailableRooms(showLoading: false);
+      } else {
+        _showSnackBar('فشل في حذف الغرفة', isError: true);
+      }
+    }
   }
 
 // إضافة هذه الدالة الجديدة:
@@ -269,178 +615,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _leaveCurrentRoom() async {
-    if (_playerId == null) return;
-
-    try {
-      final supabaseService = context.read<SupabaseService>();
-      await supabaseService.leaveRoom(_playerId!);
-
-      setState(() => _currentUserStatus = UserStatus.free);
-      _showSnackBar('تم مغادرة الغرفة');
-
-      // إعادة تحميل القوائم
-      _loadAvailableRooms();
-    } catch (e) {
-      log('خطأ في مغادرة الغرفة: $e');
-      _showSnackBar('فشل في مغادرة الغرفة', isError: true);
-    }
-  }
-
-  Future<void> _loadAvailableRooms() async {
-    if (_playerId == null) {
-      log('معرف اللاعب غير متاح');
-      return;
-    }
-
-    setState(() => _isLoading = true);
-    _refreshController.forward();
-
-    try {
-      final supabaseService = context.read<SupabaseService>();
-      final allRooms = await supabaseService.getAvailableRooms();
-
-      // تصفية الغرف بناءً على معرف اللاعب
-      final availableRooms = <GameRoom>[];
-      final myRooms = <GameRoom>[];
-
-      for (final room in allRooms) {
-        if (room.creatorId == _playerId) {
-          myRooms.add(room);
-        } else {
-          // التأكد من أن اللاعب ليس في هذه الغرفة
-          final isPlayerInRoom = room.players.any((player) => player.id == _playerId);
-          if (!isPlayerInRoom) {
-            availableRooms.add(room);
-          }
-        }
-      }
-
-      setState(() {
-        _availableRooms = availableRooms;
-        _myRooms = myRooms;
-        _isLoading = false;
-      });
-
-      log('تم تحميل ${allRooms.length} غرفة، منها ${myRooms.length} غرف خاصة بي و ${availableRooms.length} غرف متاحة');
-    } catch (e) {
-      log('خطأ في تحميل الغرف: $e');
-      setState(() => _isLoading = false);
-    } finally {
-      _refreshController.reset();
-    }
-  }
-
-  Future<void> _joinRoom(GameRoom room) async {
-    // التحقق من صحة البيانات
-    if (_nameController.text.trim().isEmpty) {
-      _showSnackBar('يرجى إدخال اسمك أولاً', isError: true);
-      return;
-    }
-
-    if (_playerId == null) {
-      _showSnackBar('خطأ في معرف اللاعب، يرجى إعادة تشغيل التطبيق', isError: true);
-      return;
-    }
-
-    // التحقق من حالة المستخدم الحالية
-    if (_currentUserStatus?.inRoom == true) {
-      _showSnackBar('يجب مغادرة الغرفة الحالية أولاً', isError: true);
-      return;
-    }
-
-    await _savePlayerName(_nameController.text.trim());
-
-    // عرض مؤشر التحميل
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 20),
-            Text('جاري الانضمام لغرفة "${room.name}"...'),
-          ],
-        ),
-      ),
-    );
-
-    try {
-      final gameProvider = context.read<GameProvider>();
-      final supabaseService = context.read<SupabaseService>();
-
-      final result = await supabaseService.joinRoom(
-        room.id,
-        _playerId!,
-        _nameController.text.trim(),
-      );
-
-      // إغلاق مؤشر التحميل
-      Navigator.pop(context);
-
-      if (result.success) {
-        // محاولة الانضمام في GameProvider
-        final success = gameProvider.joinRoom(room.id, _playerId!, _nameController.text.trim());
-
-        if (success) {
-          // تحديث حالة المستخدم
-          setState(() {
-            _currentUserStatus = UserStatus(
-              inRoom: true,
-              roomId: room.id,
-              roomName: room.name,
-              isOwner: false,
-              roomState: 'waiting',
-            );
-          });
-
-          Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (context) => GameScreen(playerId: _playerId!),
-            ),
-          ).then((_) {
-            // عند العودة من شاشة اللعبة، تحديث الحالة
-            _checkUserStatus();
-            _loadAvailableRooms();
-          });
-        } else {
-          _showSnackBar('فشل في الانضمام للغرفة محلياً', isError: true);
-        }
-      } else {
-        _showSnackBar(result.reason, isError: true);
-
-        // إذا كان المستخدم في غرفة أخرى، تحديث الحالة
-        if (result.existingRoomId != null) {
-          _checkUserStatus();
-        }
-      }
-    } catch (e) {
-      // إغلاق مؤشر التحميل في حالة الخطأ
-      Navigator.pop(context);
-      log('خطأ في الانضمام للغرفة: $e');
-      _showSnackBar('خطأ في الاتصال، يرجى المحاولة مرة أخرى', isError: true);
-    }
-  }
-
-  Future<void> _deleteRoom(GameRoom room) async {
-    final confirmed = await _showDeleteDialog(room);
-    if (confirmed == true && _playerId != null) {
-      final supabaseService = context.read<SupabaseService>();
-      final success = await supabaseService.deleteRoom(room.id, _playerId!);
-
-      if (success) {
-        _showSnackBar('تم حذف الغرفة بنجاح');
-        _loadAvailableRooms();
-      } else {
-        _showSnackBar('فشل في حذف الغرفة', isError: true);
-      }
-    }
-  }
-
   Future<bool?> _showDeleteDialog(GameRoom room) {
     return showDialog<bool>(
       context: context,
@@ -508,46 +682,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
     );
   }
-
-  void _onRefresh() {
-    _checkUserStatus();
-    _loadAvailableRooms();
-  }
-
-  Future<void> _onCreateRoom() async {
-    if (_nameController.text.trim().isEmpty) {
-      _showSnackBar('يرجى إدخال اسمك أولاً', isError: true);
-      return;
-    }
-
-    if (_currentUserStatus?.inRoom == true) {
-      _showSnackBar('يجب مغادرة الغرفة الحالية أولاً', isError: true);
-      return;
-    }
-
-    if (_playerId == null) {
-      _showSnackBar('خطأ في معرف اللاعب، يرجى إعادة تشغيل التطبيق', isError: true);
-      return;
-    }
-
-    await _savePlayerName(_nameController.text.trim());
-
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => CreateRoomScreen(
-          playerId: _playerId!,
-          playerName: _nameController.text.trim(),
-        ),
-      ),
-    );
-
-    if (result == true) {
-      _checkUserStatus();
-      _loadAvailableRooms();
-    }
-  }
-
+  
   @override
   Widget build(BuildContext context) {
     return Scaffold(

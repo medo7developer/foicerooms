@@ -53,40 +53,6 @@ class GameProvider extends ChangeNotifier {
   GameState? _lastKnownState;
   int _lastPlayersCount = 0;
 
-  // إنشاء غرفة جديدة مع إضافة المنشئ
-  GameRoom createRoom({
-    required String name,
-    required String creatorId,
-    required String creatorName,
-    required int maxPlayers,
-    required int totalRounds,
-    required int roundDuration,
-  }) {
-    final room = GameRoom(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      name: name,
-      creatorId: creatorId,
-      maxPlayers: maxPlayers,
-      totalRounds: totalRounds,
-      roundDuration: roundDuration,
-    );
-
-    // إضافة المنشئ كأول لاعب
-    final creator = Player(
-      id: creatorId,
-      name: creatorName,
-      isConnected: true,
-    );
-    room.players = [creator];
-
-    _availableRooms.add(room);
-    _currentRoom = room;
-    _currentPlayer = creator;
-
-    notifyListeners();
-    return room;
-  }
-
   void setSupabaseService(SupabaseService service) {
     _supabaseService = service;
   }
@@ -100,11 +66,13 @@ class GameProvider extends ChangeNotifier {
     return _lastPlayersCount != (_currentRoom?.players.length ?? 0);
   }
 
-  // تحسين دالة الانضمام للغرفة مع إشعار فوري
+// تحسين دالة الانضمام للغرفة مع إشعار فوري
   bool joinRoom(String roomId, String playerId, String playerName) {
     try {
       // البحث عن الغرفة بأمان
       GameRoom? targetRoom;
+
+      // البحث في قائمة الغرف المتاحة
       for (final room in _availableRooms) {
         if (room.id == roomId) {
           targetRoom = room;
@@ -112,49 +80,212 @@ class GameProvider extends ChangeNotifier {
         }
       }
 
-      if (targetRoom == null) {
-        debugPrint('الغرفة غير موجودة: $roomId');
-        return false;
+      // إذا لم توجد في المتاحة، تحقق من الغرفة الحالية
+      if (targetRoom == null && _currentRoom?.id == roomId) {
+        targetRoom = _currentRoom;
       }
 
-      // التحقق من امتلاء الغرفة
-      if (targetRoom.players.length >= targetRoom.maxPlayers) {
-        debugPrint('الغرفة ممتلئة');
+      if (targetRoom == null) {
+        debugPrint('⚠️ الغرفة غير موجودة في البيانات المحلية: $roomId');
+        // بدلاً من الفشل، حاول إنشاء غرفة مؤقتة
+        targetRoom = GameRoom(
+          id: roomId,
+          name: 'غرفة تحت التحميل...',
+          creatorId: 'unknown',
+          maxPlayers: 8,
+          totalRounds: 3,
+          roundDuration: 300,
+          players: [],
+        );
+      }
+
+      // التحقق من امتلاء الغرفة (تخطي هذا التحقق إذا كانت البيانات مؤقتة)
+      if (targetRoom.name != 'غرفة تحت التحميل...' &&
+          targetRoom.players.length >= targetRoom.maxPlayers) {
+        debugPrint('⚠️ الغرفة ممتلئة محلياً');
         return false;
       }
 
       // التحقق من وجود اللاعب مسبقاً
       final existingPlayerIndex = targetRoom.players.indexWhere((p) => p.id == playerId);
+
+      Player newPlayer;
       if (existingPlayerIndex != -1) {
-        // تحديث حالة الاتصال للاعب الموجود
-        targetRoom.players[existingPlayerIndex] = targetRoom.players[existingPlayerIndex].copyWith(
+        // تحديث بيانات اللاعب الموجود
+        newPlayer = targetRoom.players[existingPlayerIndex].copyWith(
           isConnected: true,
           name: playerName,
         );
+        targetRoom.players[existingPlayerIndex] = newPlayer;
+        debugPrint('✅ تم تحديث بيانات اللاعب الموجود: $playerName');
       } else {
         // إضافة لاعب جديد
-        final newPlayer = Player(
+        newPlayer = Player(
           id: playerId,
           name: playerName,
           isConnected: true,
         );
         targetRoom.players = [...targetRoom.players, newPlayer];
+        debugPrint('✅ تم إضافة لاعب جديد: $playerName');
       }
 
+      // تحديث البيانات المحلية
       _currentRoom = targetRoom;
-      _currentPlayer = targetRoom.players.firstWhere((p) => p.id == playerId);
+      _currentPlayer = newPlayer;
       _lastPlayersCount = targetRoom.players.length;
+
+      // إزالة الغرفة من القائمة المتاحة إذا كانت موجودة
+      _availableRooms.removeWhere((room) => room.id == roomId);
 
       // إشعار فوري بالتحديث
       notifyListeners();
 
-      // التحقق من إمكانية بدء اللعبة
-      _checkAutoStart(targetRoom, playerId);
+      // إشعار إضافي بعد تأخير قصير للتأكد
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (_currentRoom?.id == roomId) {
+          notifyListeners();
+        }
+      });
 
-      debugPrint('تم الانضمام بنجاح - عدد اللاعبين الحالي: ${targetRoom.players.length}');
+      debugPrint('✅ تم الانضمام بنجاح محلياً - عدد اللاعبين: ${targetRoom.players.length}');
+      return true;
+
+    } catch (e) {
+      debugPrint('❌ خطأ في الانضمام للغرفة محلياً: $e');
+      return false;
+    }
+  }
+
+// إضافة دالة جديدة للتحديث المتقدم من الخادم
+  void updateRoomFromServer(GameRoom serverRoom, String playerId) {
+    try {
+      debugPrint('🔄 تحديث الغرفة من الخادم: ${serverRoom.id}');
+
+      // تحديث بيانات الغرفة الحالية
+      _currentRoom = serverRoom;
+
+      // العثور على اللاعب الحالي في البيانات المحدثة
+      Player? updatedPlayer;
+      for (final player in serverRoom.players) {
+        if (player.id == playerId) {
+          updatedPlayer = player;
+          break;
+        }
+      }
+
+      if (updatedPlayer != null) {
+        _currentPlayer = updatedPlayer;
+        debugPrint('✅ تم العثور على اللاعب في البيانات المحدثة: ${updatedPlayer.name}');
+      } else {
+        debugPrint('⚠️ لم يتم العثور على اللاعب في البيانات المحدثة');
+        // إنشاء بيانات مؤقتة للاعب
+        _currentPlayer = Player(
+          id: playerId,
+          name: _currentPlayer?.name ?? 'لاعب',
+          isConnected: true,
+        );
+      }
+
+      // تحديث متغيرات التتبع
+      _lastPlayersCount = serverRoom.players.length;
+
+      // إشعار متعدد للتأكد من التحديث
+      notifyListeners();
+
+      Future.delayed(const Duration(milliseconds: 50), () {
+        notifyListeners();
+      });
+
+      Future.delayed(const Duration(milliseconds: 200), () {
+        notifyListeners();
+      });
+
+      debugPrint('✅ تم تحديث الغرفة من الخادم بنجاح');
+
+    } catch (e) {
+      debugPrint('❌ خطأ في تحديث الغرفة من الخادم: $e');
+    }
+  }
+
+// تحسين دالة createRoom لضمان المزامنة
+  GameRoom createRoom({
+    required String name,
+    required String creatorId,
+    required String creatorName,
+    required int maxPlayers,
+    required int totalRounds,
+    required int roundDuration,
+    String? roomId, // إضافة معامل اختياري للمعرف
+  }) {
+    try {
+      final room = GameRoom(
+        id: roomId ?? DateTime.now().millisecondsSinceEpoch.toString(),
+        name: name,
+        creatorId: creatorId,
+        maxPlayers: maxPlayers,
+        totalRounds: totalRounds,
+        roundDuration: roundDuration,
+      );
+
+      // إضافة المنشئ كأول لاعب
+      final creator = Player(
+        id: creatorId,
+        name: creatorName,
+        isConnected: true,
+      );
+      room.players = [creator];
+
+      // تحديث البيانات المحلية
+      _availableRooms.add(room);
+      _currentRoom = room;
+      _currentPlayer = creator;
+      _lastPlayersCount = 1;
+
+      // إشعار فوري
+      notifyListeners();
+
+      // إشعار إضافي للتأكد
+      Future.delayed(const Duration(milliseconds: 100), () {
+        notifyListeners();
+      });
+
+      debugPrint('✅ تم إنشاء الغرفة محلياً: ${room.name}');
+      return room;
+
+    } catch (e) {
+      debugPrint('❌ خطأ في إنشاء الغرفة محلياً: $e');
+      throw e;
+    }
+  }
+
+// إضافة دالة للتحقق من صحة البيانات وإصلاحها
+  bool validateAndFixGameState() {
+    try {
+      if (_currentRoom == null) {
+        debugPrint('⚠️ لا توجد غرفة حالية');
+        return false;
+      }
+
+      if (_currentPlayer == null) {
+        debugPrint('⚠️ لا يوجد لاعب حالي');
+        return false;
+      }
+
+      // التحقق من وجود اللاعب في قائمة اللاعبين
+      final playerExists = _currentRoom!.players.any((p) => p.id == _currentPlayer!.id);
+      if (!playerExists) {
+        debugPrint('⚠️ اللاعب الحالي غير موجود في قائمة اللاعبين، جاري الإصلاح...');
+
+        // إضافة اللاعب للقائمة
+        _currentRoom!.players.add(_currentPlayer!);
+        notifyListeners();
+
+        debugPrint('✅ تم إصلاح بيانات اللاعب');
+      }
+
       return true;
     } catch (e) {
-      debugPrint('خطأ في الانضمام للغرفة: $e');
+      debugPrint('❌ خطأ في التحقق من البيانات: $e');
       return false;
     }
   }

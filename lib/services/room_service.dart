@@ -38,7 +38,7 @@ class RoomService {
 
       final roomId = DateTime.now().millisecondsSinceEpoch.toString();
 
-      // إنشاء الغرفة
+      // إنشاء الغرفة - إزالة created_at إذا لم يكن موجوداً
       await _client.from('rooms').insert({
         'id': roomId,
         'name': name,
@@ -47,7 +47,7 @@ class RoomService {
         'total_rounds': totalRounds,
         'round_duration': roundDuration,
         'state': 'waiting',
-        'created_at': DateTime.now().toIso8601String(),
+        // إزالة 'created_at' إذا لم يكن موجوداً في المخطط
       });
 
       // إضافة المنشئ كلاعب في الغرفة باستخدام upsert لتجنب duplicate key
@@ -66,6 +66,20 @@ class RoomService {
     } catch (e) {
       log('خطأ في إنشاء الغرفة: $e');
       return null;
+    }
+  }
+
+  /// دالة جديدة لإشعار المنشئ باكتمال العدد - إزالة updated_at
+  Future<void> notifyRoomFull(String roomId, String creatorId) async {
+    try {
+      await _client.from('rooms').update({
+        'ready_to_start': true,
+        // إزالة 'updated_at' إذا لم يكن موجوداً
+      }).eq('id', roomId);
+
+      log('تم إشعار المنشئ $creatorId باكتمال العدد في الغرفة $roomId');
+    } catch (e) {
+      log('خطأ في إشعار اكتمال العدد: $e');
     }
   }
 
@@ -212,20 +226,6 @@ class RoomService {
       log('تم تنظيف الغرفة المنتهية: $roomId');
     } catch (e) {
       log('خطأ في تنظيف الغرفة: $e');
-    }
-  }
-
-  /// دالة جديدة لإشعار المنشئ باكتمال العدد
-  Future<void> notifyRoomFull(String roomId, String creatorId) async {
-    try {
-      await _client.from('rooms').update({
-        'ready_to_start': true,
-        'updated_at': DateTime.now().toIso8601String(),
-      }).eq('id', roomId);
-
-      log('تم إشعار المنشئ $creatorId باكتمال العدد في الغرفة $roomId');
-    } catch (e) {
-      log('خطأ في إشعار اكتمال العدد: $e');
     }
   }
 
