@@ -15,9 +15,13 @@ class RoomService {
     required int maxPlayers,
     required int totalRounds,
     required int roundDuration,
+    String creatorName = 'منشئ الغرفة', // إضافة معامل الاسم
   }) async {
     try {
-      // التحقق من وجود المستخدم في غرفة أخرى أولاً
+      // أولاً: تنظيف أي بيانات قديمة للمنشئ
+      await _cleanupPlayerData(creatorId);
+
+      // ثانياً: التحقق من وجود المستخدم في غرفة أخرى
       final existingPlayer = await _client
           .from('players')
           .select('room_id, rooms!inner(state)')
@@ -46,22 +50,33 @@ class RoomService {
         'created_at': DateTime.now().toIso8601String(),
       });
 
-      // إضافة المنشئ كلاعب في الغرفة
-      await _client.from('players').insert({
+      // إضافة المنشئ كلاعب في الغرفة باستخدام upsert لتجنب duplicate key
+      await _client.from('players').upsert({
         'id': creatorId,
-        'name': 'منشئ الغرفة', // سيتم تحديثه لاحقاً
+        'name': creatorName, // استخدام الاسم المرسل
         'room_id': roomId,
         'is_connected': true,
         'is_voted': false,
         'votes': 0,
         'role': 'normal',
-      });
+      }, onConflict: 'id'); // تحديد العمود المتصادم
 
       log('تم إنشاء الغرفة: $roomId بواسطة $creatorId');
       return roomId;
     } catch (e) {
       log('خطأ في إنشاء الغرفة: $e');
       return null;
+    }
+  }
+
+  /// دالة لتنظيف بيانات اللاعب القديمة
+  Future<void> _cleanupPlayerData(String playerId) async {
+    try {
+      // حذف اللاعب من أي غرفة قديمة منتهية أو معطلة
+      await _client.from('players').delete().eq('id', playerId);
+      log('تم تنظيف بيانات اللاعب القديمة: $playerId');
+    } catch (e) {
+      log('تحذير: لم يتم العثور على بيانات قديمة للاعب $playerId');
     }
   }
 

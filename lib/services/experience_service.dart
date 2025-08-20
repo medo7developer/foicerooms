@@ -262,91 +262,6 @@ class ExperienceService {
     }
   }
 
-  /// الحصول على قائمة المتصدرين مع معالجة محسنة للأخطاء
-  Future<List<LeaderboardEntry>> getLeaderboard({int limit = 50}) async {
-    try {
-      final response = await _client
-          .from('player_stats')
-          .select('*')
-          .order('total_xp', ascending: false)
-          .limit(limit);
-
-      if (response.isEmpty) {
-        log('لا توجد بيانات في جدول player_stats');
-        return [];
-      }
-
-      final entries = <LeaderboardEntry>[];
-
-      for (int i = 0; i < response.length; i++) {
-        try {
-          final data = response[i];
-
-          entries.add(LeaderboardEntry(
-            playerId: data['player_id'] ?? '',
-            playerName: data['player_name'] ?? 'لاعب مجهول',
-            totalXP: (data['total_xp'] as num?)?.toInt() ?? 0,
-            level: (data['level'] as num?)?.toInt() ?? 1,
-            wins: (data['wins'] as num?)?.toInt() ?? 0,
-            winRate: _calculateWinRate(data),
-            badges: _parseBadges(data['badges']),
-            rank: i + 1,
-          ));
-        } catch (itemError) {
-          log('خطأ في معالجة عنصر المتصدرين: $itemError');
-          continue;
-        }
-      }
-
-      log('تم جلب ${entries.length} عنصر في قائمة المتصدرين');
-      return entries;
-    } catch (e) {
-      log('خطأ في جلب قائمة المتصدرين: $e');
-      return [];
-    }
-  }
-
-  /// الحصول على أفضل اللاعبين في فئة معينة
-  Future<List<LeaderboardEntry>> getTopPlayersByCategory({
-    required String category,
-    int limit = 10,
-  }) async {
-    try {
-      final List<Map<String, dynamic>> response = await _client
-          .from('player_stats')
-          .select('*')
-          .gt(category, 0) // ✅ الفلترة الأول
-          .order(category, ascending: false) // ✅ الترتيب بعد الفلترة
-          .limit(limit);
-
-      if (response.isEmpty) {
-        log('لا توجد بيانات في فئة $category');
-        return [];
-      }
-
-      final entries = <LeaderboardEntry>[];
-      for (int i = 0; i < response.length; i++) {
-        final data = response[i];
-        entries.add(LeaderboardEntry(
-          playerId: data['player_id'] ?? '',
-          playerName: data['player_name'] ?? 'لاعب مجهول',
-          totalXP: (data['total_xp'] as num?)?.toInt() ?? 0,
-          level: (data['level'] as num?)?.toInt() ?? 1,
-          wins: (data['wins'] as num?)?.toInt() ?? 0,
-          winRate: _calculateWinRate(data),
-          badges: _parseBadges(data['badges']),
-          rank: i + 1,
-        ));
-      }
-
-      log('تم جلب ${entries.length} عنصر في فئة $category');
-      return entries;
-    } catch (e) {
-      log('خطأ في جلب أفضل اللاعبين في فئة $category: $e');
-      return [];
-    }
-  }
-
   /// حساب معدل الفوز مع معالجة الأخطاء
   double _calculateWinRate(Map<String, dynamic> data) {
     try {
@@ -433,6 +348,209 @@ class ExperienceService {
       log('تم تحديث اسم اللاعب $playerId إلى: $newName');
     } catch (e) {
       log('خطأ في تحديث اسم اللاعب: $e');
+    }
+  }
+
+  /// إنشاء إحصائيات فور دخول المستخدم للتطبيق
+  Future<void> initializePlayerStatsOnStart(String playerId, String playerName) async {
+    try {
+      // التحقق من وجود الإحصائيات
+      final existingStats = await _client
+          .from('player_stats')
+          .select('player_id')
+          .eq('player_id', playerId)
+          .maybeSingle();
+
+      if (existingStats == null) {
+        // إنشاء إحصائيات جديدة
+        await _createNewPlayerStats(playerId, playerName);
+        log('تم إنشاء إحصائيات جديدة للاعب عند بدء التطبيق: $playerId');
+      } else {
+        // تحديث الاسم فقط إذا كانت الإحصائيات موجودة
+        await _client
+            .from('player_stats')
+            .update({'player_name': playerName})
+            .eq('player_id', playerId);
+        log('تم تحديث اسم اللاعب الموجود: $playerId');
+      }
+    } catch (e) {
+      log('خطأ في تهيئة إحصائيات اللاعب عند البدء: $e');
+    }
+  }
+
+  /// تحديث جميع إحصائيات الاعبين بأسمائهم الحقيقية من جدول players
+  Future<void> syncPlayerNamesFromPlayersTable() async {
+    try {
+      // جلب جميع اللاعبين من جدول players مع أسمائهم الحديثة
+      final playersData = await _client
+          .from('players')
+          .select('id, name')
+          .neq('name', '')
+          .not('name', 'is', null);
+
+      if (playersData.isNotEmpty) {
+        // تحديث الأسماء في جدول player_stats
+        for (final player in playersData) {
+          try {
+            await _client
+                .from('player_stats')
+                .update({'player_name': player['name']})
+                .eq('player_id', player['id']);
+          } catch (e) {
+            log('خطأ في تحديث اسم اللاعب ${player['id']}: $e');
+            continue;
+          }
+        }
+
+        log('تم مزامنة أسماء ${playersData.length} لاعب');
+      }
+    } catch (e) {
+      log('خطأ في مزامنة أسماء اللاعبين: $e');
+    }
+  }
+
+  /// الحصول على قائمة المتصدرين مع مزامنة الأسماء أولاً
+  Future<List<LeaderboardEntry>> getLeaderboard({int limit = 50}) async {
+    try {
+      // مزامنة الأسماء أولاً
+      await syncPlayerNamesFromPlayersTable();
+
+      final response = await _client
+          .from('player_stats')
+          .select('*')
+          .order('total_xp', ascending: false)
+          .limit(limit);
+
+      if (response.isEmpty) {
+        log('لا توجد بيانات في جدول player_stats');
+        return [];
+      }
+
+      final entries = <LeaderboardEntry>[];
+
+      for (int i = 0; i < response.length; i++) {
+        try {
+          final data = response[i];
+
+          // محاولة جلب الاسم الحديث من جدول players
+          String playerName = data['player_name'] ?? 'لاعب مجهول';
+
+          // إذا كان الاسم مجهول، محاولة جلبه من جدول players
+          if (playerName == 'لاعب مجهول' || playerName.isEmpty) {
+            try {
+              final playerData = await _client
+                  .from('players')
+                  .select('name')
+                  .eq('id', data['player_id'])
+                  .limit(1)
+                  .maybeSingle();
+
+              if (playerData != null && playerData['name'] != null && playerData['name'].isNotEmpty) {
+                playerName = playerData['name'];
+
+                // تحديث الاسم في جدول الإحصائيات
+                await _client
+                    .from('player_stats')
+                    .update({'player_name': playerName})
+                    .eq('player_id', data['player_id']);
+              }
+            } catch (e) {
+              log('خطأ في جلب اسم اللاعب من جدول players: $e');
+            }
+          }
+
+          entries.add(LeaderboardEntry(
+            playerId: data['player_id'] ?? '',
+            playerName: playerName,
+            totalXP: (data['total_xp'] as num?)?.toInt() ?? 0,
+            level: (data['level'] as num?)?.toInt() ?? 1,
+            wins: (data['wins'] as num?)?.toInt() ?? 0,
+            winRate: _calculateWinRate(data),
+            badges: _parseBadges(data['badges']),
+            rank: i + 1,
+          ));
+        } catch (itemError) {
+          log('خطأ في معالجة عنصر المتصدرين: $itemError');
+          continue;
+        }
+      }
+
+      log('تم جلب ${entries.length} عنصر في قائمة المتصدرين');
+      return entries;
+    } catch (e) {
+      log('خطأ في جلب قائمة المتصدرين: $e');
+      return [];
+    }
+  }
+
+  /// الحصول على أفضل اللاعبين في فئة معينة مع مزامنة الأسماء
+  Future<List<LeaderboardEntry>> getTopPlayersByCategory({
+    required String category,
+    int limit = 10,
+  }) async {
+    try {
+      // مزامنة الأسماء أولاً
+      await syncPlayerNamesFromPlayersTable();
+
+      final List<Map<String, dynamic>> response = await _client
+          .from('player_stats')
+          .select('*')
+          .gt(category, 0)
+          .order(category, ascending: false)
+          .limit(limit);
+
+      if (response.isEmpty) {
+        log('لا توجد بيانات في فئة $category');
+        return [];
+      }
+
+      final entries = <LeaderboardEntry>[];
+      for (int i = 0; i < response.length; i++) {
+        final data = response[i];
+
+        // محاولة جلب الاسم الحديث
+        String playerName = data['player_name'] ?? 'لاعب مجهول';
+
+        if (playerName == 'لاعب مجهول' || playerName.isEmpty) {
+          try {
+            final playerData = await _client
+                .from('players')
+                .select('name')
+                .eq('id', data['player_id'])
+                .limit(1)
+                .maybeSingle();
+
+            if (playerData != null && playerData['name'] != null && playerData['name'].isNotEmpty) {
+              playerName = playerData['name'];
+
+              // تحديث الاسم في جدول الإحصائيات
+              await _client
+                  .from('player_stats')
+                  .update({'player_name': playerName})
+                  .eq('player_id', data['player_id']);
+            }
+          } catch (e) {
+            log('خطأ في جلب اسم اللاعب من جدول players: $e');
+          }
+        }
+
+        entries.add(LeaderboardEntry(
+          playerId: data['player_id'] ?? '',
+          playerName: playerName,
+          totalXP: (data['total_xp'] as num?)?.toInt() ?? 0,
+          level: (data['level'] as num?)?.toInt() ?? 1,
+          wins: (data['wins'] as num?)?.toInt() ?? 0,
+          winRate: _calculateWinRate(data),
+          badges: _parseBadges(data['badges']),
+          rank: i + 1,
+        ));
+      }
+
+      log('تم جلب ${entries.length} عنصر في فئة $category');
+      return entries;
+    } catch (e) {
+      log('خطأ في جلب أفضل اللاعبين في فئة $category: $e');
+      return [];
     }
   }
 }

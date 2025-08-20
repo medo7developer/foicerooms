@@ -26,6 +26,16 @@ class GameProvider extends ChangeNotifier {
   PlayerStats? get currentPlayerStats => _currentPlayerStats;
   List<GameReward>? get lastGameRewards => _lastGameRewards;
 
+  set currentRoom(GameRoom? room) {
+    _currentRoom = room;
+    notifyListeners(); // عشان يعمل تحديث تلقائي للـ UI
+  }
+
+  set currentPlayer(Player? player) {
+    _currentPlayer = player;
+    notifyListeners();
+  }
+
   // كلمات اللعبة
   final List<String> _gameWords = [
     'مدرسة', 'مستشفى', 'مطعم', 'مكتبة', 'حديقة',

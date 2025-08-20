@@ -83,7 +83,7 @@ class PlayerService {
         return JoinResult(success: false, reason: 'الغرفة ممتلئة');
       }
 
-      // إضافة اللاعب
+      // إضافة اللاعب باستخدام upsert لتجنب duplicate key
       await _client.from('players').upsert({
         'id': playerId,
         'name': playerName,
@@ -92,7 +92,7 @@ class PlayerService {
         'is_voted': false,
         'votes': 0,
         'role': 'normal',
-      });
+      }, onConflict: 'id'); // تحديد العمود المتصادم
 
       // التحقق من اكتمال العدد وإشعار المنشئ
       final updatedCount = currentPlayers + 1;
@@ -106,6 +106,17 @@ class PlayerService {
     } catch (e) {
       log('خطأ في الانضمام للغرفة: $e');
       return JoinResult(success: false, reason: 'خطأ في الاتصال، حاول مرة أخرى');
+    }
+  }
+
+  /// إضافة دالة لتنظيف بيانات اللاعبين المنقطعين
+  Future<void> cleanupDisconnectedPlayers() async {
+    try {
+      // حذف اللاعبين من الغرف المنتهية أو المحذوفة
+      await _client.rpc('cleanup_orphaned_players');
+      log('تم تنظيف بيانات اللاعبين المنقطعين');
+    } catch (e) {
+      log('خطأ في تنظيف بيانات اللاعبين: $e');
     }
   }
 

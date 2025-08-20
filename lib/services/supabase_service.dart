@@ -28,6 +28,7 @@ class SupabaseService {
     required int maxPlayers,
     required int totalRounds,
     required int roundDuration,
+    String? creatorName, // إضافة معامل اسم المنشئ
   }) async {
     return await _roomService.createRoom(
       name: name,
@@ -35,6 +36,7 @@ class SupabaseService {
       maxPlayers: maxPlayers,
       totalRounds: totalRounds,
       roundDuration: roundDuration,
+      creatorName: creatorName ?? 'منشئ الغرفة', // تمرير الاسم
     );
   }
 

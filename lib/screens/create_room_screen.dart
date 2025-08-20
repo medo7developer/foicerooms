@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../models/game_room_model.dart';
+import '../models/player_model.dart';
 import '../providers/game_provider.dart';
 import '../services/supabase_service.dart';
 import 'game_screen.dart';
@@ -52,13 +54,14 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
         return;
       }
 
-      // إنشاء الغرفة في قاعدة البيانات أولاً
+      // إنشاء الغرفة في قاعدة البيانات مع تمرير اسم المنشئ
       final roomId = await supabaseService.createRoom(
         name: _roomNameController.text.trim(),
         creatorId: widget.playerId,
         maxPlayers: _maxPlayers,
         totalRounds: _totalRounds,
         roundDuration: _roundDuration,
+        creatorName: widget.playerName,
       );
 
       if (roomId == null) {
@@ -67,15 +70,27 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
         return;
       }
 
-      // إنشاء الغرفة في GameProvider
-      final room = gameProvider.createRoom(
+      // إنشاء الغرفة في GameProvider بالمعرف الصحيح مباشرة
+      final room = GameRoom(
+        id: roomId, // استخدام معرف قاعدة البيانات مباشرة
         name: _roomNameController.text.trim(),
         creatorId: widget.playerId,
-        creatorName: widget.playerName,
         maxPlayers: _maxPlayers,
         totalRounds: _totalRounds,
         roundDuration: _roundDuration,
+        players: [
+          Player(
+            id: widget.playerId,
+            name: widget.playerName,
+            isConnected: true,
+          )
+        ],
       );
+
+      // تعيين الغرفة في GameProvider
+      gameProvider.currentRoom = room;
+      gameProvider.currentPlayer = room.players.first;
+      gameProvider.notifyListeners();
 
       // عرض رسالة نجاح
       _showSnackBar('تم إنشاء الغرفة بنجاح!');

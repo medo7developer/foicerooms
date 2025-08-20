@@ -6,6 +6,7 @@ import 'package:voice_rooms_app/screens/stats_screen.dart';
 import 'dart:developer';
 import '../models/game_room_model.dart';
 import '../providers/game_provider.dart';
+import '../services/experience_service.dart';
 import '../services/player_service.dart';
 import '../services/supabase_service.dart';
 import '../widgets/home/create_room_fab.dart';
@@ -62,10 +63,50 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
+// تعديل دالة _initializeApp:
   Future<void> _initializeApp() async {
     await _loadSavedData();
     await _checkUserStatus();
+
+    // إضافة تهيئة الإحصائيات هنا
+    await _initializePlayerStats();
+
     await _loadAvailableRooms();
+  }
+
+// إضافة هذه الدالة الجديدة:
+  Future<void> _initializePlayerStats() async {
+    if (_playerId == null || _nameController.text.trim().isEmpty) return;
+
+    try {
+      final experienceService = ExperienceService();
+      await experienceService.initializePlayerStatsOnStart(
+        _playerId!,
+        _nameController.text.trim(),
+      );
+      log('تم تهيئة إحصائيات اللاعب بنجاح');
+    } catch (e) {
+      log('خطأ في تهيئة إحصائيات اللاعب: $e');
+    }
+  }
+
+// تعديل دالة _savePlayerName لتحديث الإحصائيات أيضاً:
+  Future<void> _savePlayerName(String name) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('player_name', name);
+      setState(() => _savedPlayerName = name);
+
+      // تحديث/إنشاء الإحصائيات مع الاسم الجديد
+      if (_playerId != null) {
+        final experienceService = ExperienceService();
+        await experienceService.initializePlayerStatsOnStart(_playerId!, name);
+      }
+
+      log('تم حفظ اسم اللاعب وتحديث الإحصائيات: $name');
+    } catch (e) {
+      log('خطأ في حفظ اسم اللاعب: $e');
+    }
   }
 
   Future<void> _loadSavedData() async {
@@ -243,17 +284,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     } catch (e) {
       log('خطأ في مغادرة الغرفة: $e');
       _showSnackBar('فشل في مغادرة الغرفة', isError: true);
-    }
-  }
-
-  Future<void> _savePlayerName(String name) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('player_name', name);
-      setState(() => _savedPlayerName = name);
-      log('تم حفظ اسم اللاعب: $name');
-    } catch (e) {
-      log('خطأ في حفظ اسم اللاعب: $e');
     }
   }
 
