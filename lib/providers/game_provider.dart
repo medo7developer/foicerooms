@@ -43,18 +43,23 @@ class Player {
   }
 }
 
+// تحديثات في ملف: lib/providers/game_provider.dart
+
+// في كلاس GameRoom، أضف الحقل التالي:
 class GameRoom {
   final String id;
   final String name;
   final String creatorId;
   final int maxPlayers;
   final int totalRounds;
-  final int roundDuration; // بالثواني
+  final int roundDuration;
   List<Player> players;
   GameState state;
   int currentRound;
   String? currentWord;
   String? spyId;
+  String? revealedSpyId;
+  String? winner; // *** حقل جديد للفائز ***
   DateTime? roundStartTime;
 
   GameRoom({
@@ -69,6 +74,8 @@ class GameRoom {
     this.currentRound = 0,
     this.currentWord,
     this.spyId,
+    this.revealedSpyId,
+    this.winner, // *** إضافة الحقل الجديد ***
     this.roundStartTime,
   });
 
@@ -84,6 +91,8 @@ class GameRoom {
     int? currentRound,
     String? currentWord,
     String? spyId,
+    String? revealedSpyId,
+    String? winner, // *** إضافة الحقل الجديد ***
     DateTime? roundStartTime,
   }) {
     return GameRoom(
@@ -98,6 +107,8 @@ class GameRoom {
       currentRound: currentRound ?? this.currentRound,
       currentWord: currentWord ?? this.currentWord,
       spyId: spyId ?? this.spyId,
+      revealedSpyId: revealedSpyId ?? this.revealedSpyId,
+      winner: winner ?? this.winner, // *** إضافة الحقل الجديد ***
       roundStartTime: roundStartTime ?? this.roundStartTime,
     );
   }
@@ -384,21 +395,20 @@ class GameProvider extends ChangeNotifier {
     }
   }
 
-// 3. تحديث دالة updateRoomFromRealtime لدعم الحالة الجديدة
+// تحسين دالة updateRoomFromRealtime
   void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
     if (_currentRoom == null) return;
 
     // حفظ الحالة السابقة للمقارنة
     final oldState = _currentRoom!.state;
     final oldPlayersCount = _currentRoom!.players.length;
+    final oldConnectedCount = connectedPlayersCount;
 
     // تحديث بيانات الغرفة
     _currentRoom = updatedRoom;
 
     // العثور على اللاعب الحالي في البيانات المحدثة
     Player? updatedPlayer;
-
-    // البحث عن اللاعب الحالي
     for (final player in updatedRoom.players) {
       if (player.id == playerId) {
         updatedPlayer = player;
@@ -406,10 +416,8 @@ class GameProvider extends ChangeNotifier {
       }
     }
 
-    // إذا لم يتم العثور على اللاعب (تم إقصاؤه)
     if (updatedPlayer == null) {
       log('⚠️ اللاعب $playerId تم إقصاؤه من الغرفة');
-      // إنشاء لاعب وهمي للعرض فقط
       _currentPlayer = Player(
         id: playerId,
         name: _currentPlayer?.name ?? 'لاعب محذوف',
@@ -422,29 +430,36 @@ class GameProvider extends ChangeNotifier {
       _currentPlayer = updatedPlayer;
     }
 
-    // إشعار التحديث إذا تغيرت الحالة
-    if (oldState != updatedRoom.state) {
-      log('🔄 تغيرت حالة الغرفة من $oldState إلى ${updatedRoom.state}');
-
-      // معالجة خاصة للانتقالات المهمة
-      _handleStateTransition(oldState, updatedRoom.state);
+    // تسجيل التغييرات المهمة
+    final newConnectedCount = connectedPlayersCount;
+    if (oldConnectedCount != newConnectedCount) {
+      log('👥 تغير عدد اللاعبين المتصلين من $oldConnectedCount إلى $newConnectedCount');
     }
 
-    // إشعار التحديث إذا تغير عدد اللاعبين
-    if (oldPlayersCount != updatedRoom.players.length) {
-      log('👥 تغير عدد اللاعبين من $oldPlayersCount إلى ${updatedRoom.players.length}');
+    if (oldState != updatedRoom.state) {
+      log('🔄 تغيرت حالة الغرفة من $oldState إلى ${updatedRoom.state}');
+      _handleStateTransition(oldState, updatedRoom.state);
     }
 
     // تحديث متغيرات التتبع
     _lastKnownState = updatedRoom.state;
     _lastPlayersCount = updatedRoom.players.length;
 
-    // إشعار فوري
+    // إشعارات متعددة للتأكد من التحديث
     notifyListeners();
 
-    // إشعار إضافي بعد تأخير قصير للتأكد
+    // إشعار إضافي بعد تأخير قصير
+    Future.delayed(const Duration(milliseconds: 50), () {
+      if (_currentRoom != null) {
+        notifyListeners();
+      }
+    });
+
+    // إشعار نهائي للتأكد
     Future.delayed(const Duration(milliseconds: 200), () {
-      notifyListeners();
+      if (_currentRoom != null) {
+        notifyListeners();
+      }
     });
   }
 
@@ -917,6 +932,40 @@ class GameProvider extends ChangeNotifier {
     }
 
     return true;
+  }
+
+  // إضافة هذه الدالة في GameProvider
+  void updatePlayerConnectionStatus(String playerId, bool isConnected) {
+    if (_currentRoom == null) return;
+
+    bool updated = false;
+    for (int i = 0; i < _currentRoom!.players.length; i++) {
+      if (_currentRoom!.players[i].id == playerId) {
+        _currentRoom!.players[i] = _currentRoom!.players[i].copyWith(
+            isConnected: isConnected
+        );
+        updated = true;
+        break;
+      }
+    }
+
+    if (updated) {
+      // تحديث اللاعب الحالي إذا كان هو المتأثر
+      if (_currentPlayer?.id == playerId) {
+        _currentPlayer = _currentRoom!.players.firstWhere(
+                (p) => p.id == playerId,
+            orElse: () => _currentPlayer!
+        );
+      }
+
+      debugPrint('تم تحديث حالة الاتصال للاعب $playerId: $isConnected');
+      notifyListeners();
+
+      // إشعار إضافي للتأكد من التحديث
+      Future.delayed(const Duration(milliseconds: 100), () {
+        notifyListeners();
+      });
+    }
   }
 
   // إضافة دالة جديدة للتحديث المباشر:

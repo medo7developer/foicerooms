@@ -200,7 +200,7 @@ class RealtimeManager {
     }
   }
 
-  // تحويل بيانات قاعدة البيانات إلى GameRoom مع معالجة محسنة
+// في دالة _convertToGameRoom، أضف السطر التالي:
   GameRoom? _convertToGameRoom(Map<String, dynamic> data) {
     try {
       final playersData = data['players'] as List? ?? [];
@@ -245,6 +245,8 @@ class RealtimeManager {
         currentRound: data['current_round'] ?? 0,
         currentWord: data['current_word'],
         spyId: data['spy_id'],
+        revealedSpyId: data['revealed_spy_id'],
+        winner: data['winner'], // *** إضافة الحقل الجديد ***
         roundStartTime: roundStartTime,
       );
     } catch (e) {

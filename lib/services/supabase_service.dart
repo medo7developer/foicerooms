@@ -166,4 +166,34 @@ class SupabaseService {
   Future<void> clearReceivedSignal(String playerId) async {
     return await _signalingService.clearReceivedSignal(playerId);
   }
+
+  /// إنهاء اللعبة مع عرض الجاسوس الحقيقي
+  Future<void> endGameAndRevealSpy(String roomId, String winner, String? spyId) async {
+    return await _gameLogicService.endGameAndRevealSpy(roomId, winner, spyId);
+  }
+
+  /// التحقق من عدد اللاعبين المتبقين وإنهاء اللعبة إذا لزم الأمر
+  Future<bool> checkAndHandleInsufficientPlayers(String roomId) async {
+    try {
+      final roomData = await _roomService.getRoomById(roomId);
+      if (roomData == null) return false;
+
+      final connectedPlayers = roomData.players.where((p) => p.isConnected).length;
+
+      if (connectedPlayers < 3) {
+        // إنهاء اللعبة تلقائياً
+        final remainingSpies = roomData.players.where((p) => p.role == PlayerRole.spy && p.isConnected).toList();
+        final winner = remainingSpies.isNotEmpty ? 'spy' : 'normal_players';
+
+        await endGameAndRevealSpy(roomId, winner, roomData.spyId);
+        return true; // تم إنهاء اللعبة
+      }
+
+      return false; // اللعبة مستمرة
+    } catch (e) {
+      log('خطأ في فحص عدد اللاعبين: $e');
+      return false;
+    }
+  }
+
 }

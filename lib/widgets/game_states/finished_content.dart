@@ -16,7 +16,16 @@ class FinishedContent extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final wasPlayerSpy = currentPlayer.role == PlayerRole.spy;
-    final spyWon = room.players.any((p) => p.role == PlayerRole.spy);
+
+    // تحديد الفائز بناءً على بيانات الغرفة
+    bool spyWon = false;
+    if (room.winner != null) {
+      spyWon = room.winner == 'spy';
+    } else {
+      // fallback للطريقة القديمة
+      spyWon = room.players.any((p) => p.role == PlayerRole.spy);
+    }
+
     final playerWon = wasPlayerSpy ? spyWon : !spyWon;
 
     return Center(
@@ -42,10 +51,89 @@ class FinishedContent extends StatelessWidget {
             _buildResultTitle(playerWon),
             const SizedBox(height: 10),
             _buildResultDescription(wasPlayerSpy, spyWon),
+
+            // *** إضافة عرض الجاسوس المكشوف ***
+            if (room.revealedSpyId != null) ...[
+              const SizedBox(height: 20),
+              _buildRevealedSpySection(),
+            ],
+
             const SizedBox(height: 30),
             _buildBackToHomeButton(context),
           ],
         ),
+      ),
+    );
+  }
+
+// *** دالة جديدة لعرض الجاسوس المكشوف ***
+  Widget _buildRevealedSpySection() {
+    // البحث عن اسم الجاسوس من البيانات المحفوظة
+    String spyName = 'الجاسوس';
+
+    // محاولة العثور على اسم الجاسوس من اللاعبين الحاليين أو السابقين
+    final allPlayersIncludingEliminated = [...room.players];
+
+    // في حالة عدم وجود الجاسوس في القائمة الحالية (تم إقصاؤه)
+    final spyPlayer = allPlayersIncludingEliminated.firstWhere(
+          (p) => p.id == room.revealedSpyId,
+      orElse: () => Player(
+        id: room.revealedSpyId!,
+        name: 'الجاسوس المكشوف',
+        role: PlayerRole.spy,
+      ),
+    );
+
+    spyName = spyPlayer.name;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Colors.red.shade100, Colors.red.shade200],
+        ),
+        borderRadius: BorderRadius.circular(15),
+        border: Border.all(color: Colors.red, width: 2),
+      ),
+      child: Column(
+        children: [
+          const Icon(
+            Icons.visibility,
+            size: 40,
+            color: Colors.red,
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'كشف الجاسوس!',
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.red,
+            ),
+          ),
+          const SizedBox(height: 8),
+          RichText(
+            textAlign: TextAlign.center,
+            text: TextSpan(
+              style: const TextStyle(fontSize: 16, color: Colors.black87),
+              children: [
+                const TextSpan(text: 'الجاسوس الحقيقي كان: '),
+                TextSpan(
+                  text: spyName,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.red,
+                    fontSize: 18,
+                  ),
+                ),
+                const TextSpan(text: ' 🕵️'),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

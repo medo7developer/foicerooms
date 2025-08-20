@@ -63,58 +63,7 @@ class RoomService {
     }
   }
 
-  /// الحصول على الغرف المتاحة مع فلترة أفضل
-  Future<List<GameRoom>> getAvailableRooms() async {
-    try {
-      final response = await _client
-          .from('rooms')
-          .select('*, players(*)')
-          .inFilter('state', ['waiting', 'playing', 'voting'])
-          .order('created_at', ascending: false);
-
-      final List<GameRoom> rooms = [];
-
-      for (final roomData in response) {
-        try {
-          final players = (roomData['players'] as List? ?? [])
-              .map((p) => Player(
-            id: p['id'] ?? '',
-            name: p['name'] ?? 'لاعب',
-            isConnected: p['is_connected'] ?? false,
-            isVoted: p['is_voted'] ?? false,
-            votes: p['votes'] ?? 0,
-            role: (p['role'] == 'spy') ? PlayerRole.spy : PlayerRole.normal,
-          ))
-              .toList();
-
-          rooms.add(GameRoom(
-            id: roomData['id'] ?? '',
-            name: roomData['name'] ?? 'غرفة بدون اسم',
-            creatorId: roomData['creator_id'] ?? '',
-            maxPlayers: roomData['max_players'] ?? 4,
-            totalRounds: roomData['total_rounds'] ?? 3,
-            roundDuration: roomData['round_duration'] ?? 300,
-            players: players,
-            state: _parseGameState(roomData['state']),
-            currentRound: roomData['current_round'] ?? 0,
-            currentWord: roomData['current_word'],
-            spyId: roomData['spy_id'],
-          ));
-        } catch (e) {
-          log('خطأ في معالجة غرفة: $e');
-          continue; // تخطي الغرفة المعطوبة
-        }
-      }
-
-      log('تم جلب ${rooms.length} غرفة من قاعدة البيانات');
-      return rooms;
-    } catch (e) {
-      log('خطأ في جلب الغرف: $e');
-      return [];
-    }
-  }
-
-  /// الحصول على معلومات الغرفة بأمان
+// في دالة getRoomById، أضف السطر التالي:
   Future<GameRoom?> getRoomById(String roomId) async {
     try {
       final response = await _client
@@ -151,10 +100,65 @@ class RoomService {
         currentRound: response['current_round'] ?? 0,
         currentWord: response['current_word'],
         spyId: response['spy_id'],
+        revealedSpyId: response['revealed_spy_id'],
+        winner: response['winner'], // *** إضافة الحقل الجديد ***
       );
     } catch (e) {
       log('خطأ في جلب معلومات الغرفة: $e');
       return null;
+    }
+  }
+
+// في دالة getAvailableRooms، أضف السطر التالي في حلقة التكرار:
+  Future<List<GameRoom>> getAvailableRooms() async {
+    try {
+      final response = await _client
+          .from('rooms')
+          .select('*, players(*)')
+          .inFilter('state', ['waiting', 'playing', 'voting'])
+          .order('created_at', ascending: false);
+
+      final List<GameRoom> rooms = [];
+
+      for (final roomData in response) {
+        try {
+          final players = (roomData['players'] as List? ?? [])
+              .map((p) => Player(
+            id: p['id'] ?? '',
+            name: p['name'] ?? 'لاعب',
+            isConnected: p['is_connected'] ?? false,
+            isVoted: p['is_voted'] ?? false,
+            votes: p['votes'] ?? 0,
+            role: (p['role'] == 'spy') ? PlayerRole.spy : PlayerRole.normal,
+          ))
+              .toList();
+
+          rooms.add(GameRoom(
+            id: roomData['id'] ?? '',
+            name: roomData['name'] ?? 'غرفة بدون اسم',
+            creatorId: roomData['creator_id'] ?? '',
+            maxPlayers: roomData['max_players'] ?? 4,
+            totalRounds: roomData['total_rounds'] ?? 3,
+            roundDuration: roomData['round_duration'] ?? 300,
+            players: players,
+            state: _parseGameState(roomData['state']),
+            currentRound: roomData['current_round'] ?? 0,
+            currentWord: roomData['current_word'],
+            spyId: roomData['spy_id'],
+            revealedSpyId: roomData['revealed_spy_id'],
+            winner: roomData['winner'], // *** إضافة الحقل الجديد ***
+          ));
+        } catch (e) {
+          log('خطأ في معالجة غرفة: $e');
+          continue;
+        }
+      }
+
+      log('تم جلب ${rooms.length} غرفة من قاعدة البيانات');
+      return rooms;
+    } catch (e) {
+      log('خطأ في جلب الغرف: $e');
+      return [];
     }
   }
 

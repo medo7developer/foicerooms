@@ -14,8 +14,18 @@ class ContinueVotingContent extends StatelessWidget {
     required this.currentPlayer,
   });
 
+// تحديثات في ملف: lib/widgets/game_states/continue_voting_content.dart
+
   @override
   Widget build(BuildContext context) {
+    // *** فحص عدد اللاعبين المتبقين ***
+    final connectedPlayers = room.players.where((p) => p.isConnected).length;
+
+    // إذا كان عدد اللاعبين أقل من 3، لا نعرض واجهة التصويت
+    if (connectedPlayers < 3) {
+      return _buildInsufficientPlayersMessage(context);
+    }
+
     final hasVoted = currentPlayer.isVoted;
     final playerChoice = hasVoted ? (currentPlayer.votes == 1 ? 'إكمال' : 'إنهاء') : null;
 
@@ -29,6 +39,53 @@ class ContinueVotingContent extends StatelessWidget {
           const SizedBox(height: 30),
           Expanded(child: _buildPlayersVotingStatus()),
         ],
+      ),
+    );
+  }
+
+// *** دالة جديدة لعرض رسالة عدم كفاية اللاعبين ***
+  Widget _buildInsufficientPlayersMessage(BuildContext context) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(30),
+        decoration: BoxDecoration(
+          color: Colors.orange.shade100,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: Colors.orange, width: 2),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.groups_2_outlined,
+              size: 60,
+              color: Colors.orange,
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'عدد اللاعبين غير كافٍ',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.orange,
+              ),
+            ),
+            const SizedBox(height: 15),
+            Text(
+              'عدد اللاعبين المتبقين (${room.players.where((p) => p.isConnected).length}) أقل من الحد الأدنى المطلوب (3)\nسيتم إنهاء اللعبة تلقائياً...',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 16,
+                color: Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 20),
+            const CircularProgressIndicator(
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
+            ),
+          ],
+        ),
       ),
     );
   }

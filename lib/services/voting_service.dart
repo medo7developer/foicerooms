@@ -74,7 +74,7 @@ class VotingService {
     }
   }
 
-  /// انتهاء الجولة المحدثة
+  /// انتهاء الجولة المحدثة - التعديل في دالة _endRound
   Future<void> _endRound(String roomId, List<dynamic> players) async {
     try {
       log('🔄 بدء معالجة انتهاء الجولة في الغرفة: $roomId');
@@ -106,7 +106,7 @@ class VotingService {
       // الحصول على معلومات الغرفة الحالية
       final roomData = await _client
           .from('rooms')
-          .select('current_round, total_rounds, state')
+          .select('current_round, total_rounds, state, spy_id')
           .eq('id', roomId)
           .maybeSingle();
 
@@ -117,10 +117,28 @@ class VotingService {
 
       final currentRound = roomData['current_round'] ?? 1;
       final totalRounds = roomData['total_rounds'] ?? 3;
+      final spyId = roomData['spy_id'];
 
       log('🎮 الجولة الحالية: $currentRound من $totalRounds');
 
-      // تحديد نتيجة اللعبة
+      // *** التحديث الجديد: فحص عدد اللاعبين المتبقين أولاً ***
+      if (remainingPlayers.length < 3) {
+        // إنهاء اللعبة فوراً إذا كان عدد اللاعبين أقل من 3
+        String winner;
+        if (remainingSpies.isEmpty) {
+          winner = 'normal_players';
+          log('🎉 فوز اللاعبين العاديين - تم إقصاء الجاسوس');
+        } else {
+          winner = 'spy';
+          log('🎉 فوز الجاسوس - عدد اللاعبين المتبقين أقل من 3');
+        }
+
+        // إنهاء اللعبة مع عرض الجاسوس الحقيقي
+        await _gameLogicService.endGameAndRevealSpy(roomId, winner, spyId);
+        return;
+      }
+
+      // تحديد نتيجة اللعبة للحالات الأخرى
       String? winner;
       String? nextState;
 
@@ -130,14 +148,8 @@ class VotingService {
         nextState = 'finished';
         log('🎉 فوز اللاعبين العاديين - تم إقصاء الجاسوس');
 
-      } else if (remainingNormal.length <= remainingSpies.length) {
-        // فوز الجاسوس - عدد اللاعبين العاديين أصبح قليل
-        winner = 'spy';
-        nextState = 'finished';
-        log('🎉 فوز الجاسوس - عدد اللاعبين العاديين قليل');
-
       } else if (currentRound >= totalRounds) {
-        // انتهاء الجولات المحددة - التصويت على الإكمال
+        // انتهاء الجولات المحددة - التصويت على الإكمال (فقط إذا كان عدد اللاعبين 3 أو أكثر)
         nextState = 'continue_voting';
         log('🗳️ انتهاء الجولات المحددة - بدء التصويت على الإكمال');
 
@@ -149,7 +161,7 @@ class VotingService {
 
       // تطبيق التحديث المناسب
       if (nextState == 'finished' && winner != null) {
-        await _gameLogicService.endGame(roomId, winner);
+        await _gameLogicService.endGameAndRevealSpy(roomId, winner, spyId);
 
       } else if (nextState == 'continue_voting') {
         await _gameLogicService.startContinueVoting(roomId, currentRound + 1, remainingPlayers);

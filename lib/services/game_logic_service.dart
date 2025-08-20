@@ -167,45 +167,6 @@ class GameLogicService {
     }
   }
 
-  /// بدء جولة جديدة
-  Future<void> startNewRound(String roomId, int roundNumber, List<dynamic> players) async {
-    try {
-      // اختيار جاسوس جديد
-      final connectedPlayers = players.where((p) => p['is_connected'] == true).toList();
-      connectedPlayers.shuffle();
-      final newSpyIndex = DateTime.now().millisecond % connectedPlayers.length;
-      final newSpyId = connectedPlayers[newSpyIndex]['id'];
-
-      // اختيار كلمة جديدة
-      final wordsToUse = List<String>.from(gameWords);
-      wordsToUse.shuffle();
-      final newWord = wordsToUse.first;
-
-      // تحديث الغرفة
-      await _client.from('rooms').update({
-        'state': 'playing',
-        'current_round': roundNumber,
-        'spy_id': newSpyId,
-        'current_word': newWord,
-        'round_start_time': DateTime.now().toIso8601String(),
-        'updated_at': DateTime.now().toIso8601String(),
-      }).eq('id', roomId);
-
-      // إعادة تعيين جميع اللاعبين
-      for (final player in connectedPlayers) {
-        await _client.from('players').update({
-          'role': player['id'] == newSpyId ? 'spy' : 'normal',
-          'votes': 0,
-          'is_voted': false,
-        }).eq('id', player['id']);
-      }
-
-      log('بدأت جولة جديدة: $roundNumber في الغرفة: $roomId');
-    } catch (e) {
-      log('خطأ في بدء جولة جديدة: $e');
-    }
-  }
-
   /// إنهاء اللعبة
   Future<void> endGame(String roomId, String winner) async {
     try {
@@ -257,17 +218,41 @@ class GameLogicService {
       rethrow;
     }
   }
+  
+  /// الاستماع لتحديثات الغرفة
+  Stream<Map<String, dynamic>> listenToRoom(String roomId) {
+    return _client
+        .from('rooms')
+        .stream(primaryKey: ['id'])
+        .eq('id', roomId)
+        .map((List<Map<String, dynamic>> data) => data.isNotEmpty ? data.first : {});
+  }
 
-// وأضف هذه الدالة الجديدة أيضاً:
+  /// إنهاء اللعبة مع عرض الجاسوس الحقيقي (دالة جديدة)
+  Future<void> endGameAndRevealSpy(String roomId, String winner, String? spyId) async {
+    try {
+      await _client.from('rooms').update({
+        'state': 'finished',
+        'winner': winner,
+        'revealed_spy_id': spyId, // حقل جديد لعرض الجاسوس
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', roomId);
 
-  /// التحقق من انتهاء تصويت الإكمال ومعالجة النتيجة
+      log('انتهت اللعبة في الغرفة $roomId - الفائز: $winner - الجاسوس المكشوف: $spyId');
+    } catch (e) {
+      log('خطأ في إنهاء اللعبة مع عرض الجاسوس: $e');
+      rethrow;
+    }
+  }
+
+  /// التحقق من انتهاء تصويت الإكمال ومعالجة النتيجة (تحديث)
   Future<void> processContinueVotingResult(String roomId) async {
     try {
       log('🔍 التحقق من نتائج التصويت على الإكمال في الغرفة: $roomId');
 
       final roomData = await _client
           .from('rooms')
-          .select('next_round, players!inner(*)')
+          .select('next_round, spy_id, players!inner(*)')
           .eq('id', roomId)
           .eq('state', 'continue_voting')
           .maybeSingle();
@@ -287,6 +272,15 @@ class GameLogicService {
         return;
       }
 
+      // *** فحص عدد اللاعبين المتبقين قبل التصويت ***
+      if (connectedPlayers.length < 3) {
+        final remainingSpies = connectedPlayers.where((p) => p['role'] == 'spy').toList();
+        final winner = remainingSpies.isNotEmpty ? 'spy' : 'normal_players';
+        log('🏁 عدد اللاعبين أقل من 3 - إنهاء اللعبة - الفائز: $winner');
+        await endGameAndRevealSpy(roomId, winner, roomData['spy_id']);
+        return;
+      }
+
       // حساب الأصوات
       final continueVotes = votedPlayers.where((p) => p['votes'] == 1).length;
       final endVotes = votedPlayers.where((p) => p['votes'] == 0).length;
@@ -295,15 +289,23 @@ class GameLogicService {
       log('📊 نتائج التصويت - إكمال: $continueVotes، إنهاء: $endVotes');
 
       if (continueVotes > endVotes) {
-        // الأغلبية تريد الإكمال
-        log('▶️ الأغلبية تريد الإكمال - بدء الجولة: $nextRound');
-        await startNewRound(roomId, nextRound, connectedPlayers);
+        // الأغلبية تريد الإكمال - تحقق من عدد اللاعبين مرة أخرى
+        if (connectedPlayers.length >= 3) {
+          log('▶️ الأغلبية تريد الإكمال - بدء الجولة: $nextRound');
+          await startNewRound(roomId, nextRound, connectedPlayers);
+        } else {
+          // حتى لو أرادوا الإكمال، العدد غير كافٍ
+          final remainingSpies = connectedPlayers.where((p) => p['role'] == 'spy').toList();
+          final winner = remainingSpies.isNotEmpty ? 'spy' : 'normal_players';
+          log('🏁 العدد غير كافٍ للإكمال - إنهاء اللعبة - الفائز: $winner');
+          await endGameAndRevealSpy(roomId, winner, roomData['spy_id']);
+        }
       } else {
         // الأغلبية تريد الإنهاء أو تعادل
         final remainingSpies = connectedPlayers.where((p) => p['role'] == 'spy').toList();
         final winner = remainingSpies.isNotEmpty ? 'spy' : 'normal_players';
         log('🏁 الأغلبية تريد الإنهاء - الفائز: $winner');
-        await endGame(roomId, winner);
+        await endGameAndRevealSpy(roomId, winner, roomData['spy_id']);
       }
 
     } catch (e) {
@@ -312,12 +314,62 @@ class GameLogicService {
     }
   }
 
-  /// الاستماع لتحديثات الغرفة
-  Stream<Map<String, dynamic>> listenToRoom(String roomId) {
-    return _client
-        .from('rooms')
-        .stream(primaryKey: ['id'])
-        .eq('id', roomId)
-        .map((List<Map<String, dynamic>> data) => data.isNotEmpty ? data.first : {});
+  /// بدء جولة جديدة مع فحص عدد اللاعبين (تحديث)
+  Future<void> startNewRound(String roomId, int roundNumber, List<dynamic> players) async {
+    try {
+      // فحص عدد اللاعبين المتصلين
+      final connectedPlayers = players.where((p) => p['is_connected'] == true).toList();
+
+      if (connectedPlayers.length < 3) {
+        log('❌ عدد اللاعبين المتصلين غير كافٍ لبدء جولة جديدة: ${connectedPlayers.length}');
+
+        // الحصول على معلومات الجاسوس الحالي
+        final roomData = await _client
+            .from('rooms')
+            .select('spy_id')
+            .eq('id', roomId)
+            .maybeSingle();
+
+        final remainingSpies = connectedPlayers.where((p) => p['role'] == 'spy').toList();
+        final winner = remainingSpies.isNotEmpty ? 'spy' : 'normal_players';
+        await endGameAndRevealSpy(roomId, winner, roomData?['spy_id']);
+        return;
+      }
+
+      // اختيار جاسوس جديد
+      connectedPlayers.shuffle();
+      final newSpyIndex = DateTime.now().millisecond % connectedPlayers.length;
+      final newSpyId = connectedPlayers[newSpyIndex]['id'];
+
+      // اختيار كلمة جديدة
+      final wordsToUse = List<String>.from(gameWords);
+      wordsToUse.shuffle();
+      final newWord = wordsToUse.first;
+
+      // تحديث الغرفة
+      await _client.from('rooms').update({
+        'state': 'playing',
+        'current_round': roundNumber,
+        'spy_id': newSpyId,
+        'current_word': newWord,
+        'round_start_time': DateTime.now().toIso8601String(),
+        'updated_at': DateTime.now().toIso8601String(),
+      }).eq('id', roomId);
+
+      // إعادة تعيين جميع اللاعبين
+      for (final player in connectedPlayers) {
+        await _client.from('players').update({
+          'role': player['id'] == newSpyId ? 'spy' : 'normal',
+          'votes': 0,
+          'is_voted': false,
+        }).eq('id', player['id']);
+      }
+
+      log('بدأت جولة جديدة: $roundNumber في الغرفة: $roomId مع ${connectedPlayers.length} لاعبين');
+    } catch (e) {
+      log('خطأ في بدء جولة جديدة: $e');
+      rethrow;
+    }
   }
+
 }
