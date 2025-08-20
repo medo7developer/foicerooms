@@ -111,12 +111,38 @@ class RealtimeManager {
     }
   }
 
-// تحديث دالة _handleRoomUpdate:
   void _handleRoomUpdate(PostgresChangePayload payload) {
     try {
-      log('معالجة تحديث الغرفة: ${payload.eventType}');
+      log('🔄 معالجة تحديث الغرفة: ${payload.eventType}');
 
-      // تحديث فوري للبيانات
+      // في حالة التحديث، تحقق من تغيير الحالة
+      if (payload.eventType == PostgresChangeEvent.update) {
+        final oldState = payload.oldRecord?['state'];
+        final newState = payload.newRecord?['state'];
+
+        if (oldState != newState) {
+          log('🔄 تغيرت حالة الغرفة من $oldState إلى $newState');
+
+          // معالجة خاصة للانتقالات المهمة
+          if (oldState == 'voting' && (newState == 'continue_voting' || newState == 'playing' || newState == 'finished')) {
+            log('⚡ انتقال مهم من التصويت - تحديث فوري متعدد');
+            _refreshRoomData();
+            Future.delayed(const Duration(milliseconds: 200), () => _refreshRoomData());
+            Future.delayed(const Duration(milliseconds: 500), () => _refreshRoomData());
+            Future.delayed(const Duration(milliseconds: 1000), () => _refreshRoomData());
+            return;
+          }
+
+          if (oldState == 'continue_voting' && (newState == 'playing' || newState == 'finished')) {
+            log('⚡ انتقال من تصويت الإكمال - تحديث فوري');
+            _refreshRoomData();
+            Future.delayed(const Duration(milliseconds: 300), () => _refreshRoomData());
+            return;
+          }
+        }
+      }
+
+      // تحديث عادي للبيانات
       _refreshRoomData();
 
       // تحديث إضافي بعد تأخير قصير
@@ -124,10 +150,9 @@ class RealtimeManager {
         _refreshRoomData();
       });
     } catch (e) {
-      log('خطأ في معالجة تحديث الغرفة: $e');
+      log('❌ خطأ في معالجة تحديث الغرفة: $e');
     }
   }
-
 // تحديث دالة _handlePlayersUpdate:
   void _handlePlayersUpdate(PostgresChangePayload payload) {
     try {

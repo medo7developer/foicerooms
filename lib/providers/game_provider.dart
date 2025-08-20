@@ -390,41 +390,101 @@ class GameProvider extends ChangeNotifier {
 
     // حفظ الحالة السابقة للمقارنة
     final oldState = _currentRoom!.state;
+    final oldPlayersCount = _currentRoom!.players.length;
 
     // تحديث بيانات الغرفة
     _currentRoom = updatedRoom;
 
     // العثور على اللاعب الحالي في البيانات المحدثة
-    final updatedPlayer = updatedRoom.players.firstWhere(
-          (p) => p.id == playerId,
-      orElse: () => _currentPlayer ?? Player(
-        id: playerId,
-        name: 'لاعب',
-        isConnected: true,
-        isVoted: false,
-        votes: 0,
-        role: PlayerRole.normal,
-      ),
-    );
+    Player? updatedPlayer;
 
-    _currentPlayer = updatedPlayer;
-
-    // إشعار التحديث إذا تغيرت الحالة
-    if (oldState != updatedRoom.state) {
-      log('تغيرت حالة الغرفة من $oldState إلى ${updatedRoom.state}');
-
-      // معالجة خاصة للانتقال من voting إلى continue_voting
-      if (oldState == GameState.voting && updatedRoom.state == GameState.continueVoting) {
-        log('انتقال من التصويت العادي إلى التصويت على الإكمال');
-      }
-
-      // معالجة خاصة للانتقال من continue_voting إلى playing (جولة جديدة)
-      if (oldState == GameState.continueVoting && updatedRoom.state == GameState.playing) {
-        log('بدء جولة جديدة بعد التصويت على الإكمال');
+    // البحث عن اللاعب الحالي
+    for (final player in updatedRoom.players) {
+      if (player.id == playerId) {
+        updatedPlayer = player;
+        break;
       }
     }
 
+    // إذا لم يتم العثور على اللاعب (تم إقصاؤه)
+    if (updatedPlayer == null) {
+      log('⚠️ اللاعب $playerId تم إقصاؤه من الغرفة');
+      // إنشاء لاعب وهمي للعرض فقط
+      _currentPlayer = Player(
+        id: playerId,
+        name: _currentPlayer?.name ?? 'لاعب محذوف',
+        isConnected: false,
+        isVoted: true,
+        votes: 0,
+        role: _currentPlayer?.role ?? PlayerRole.normal,
+      );
+    } else {
+      _currentPlayer = updatedPlayer;
+    }
+
+    // إشعار التحديث إذا تغيرت الحالة
+    if (oldState != updatedRoom.state) {
+      log('🔄 تغيرت حالة الغرفة من $oldState إلى ${updatedRoom.state}');
+
+      // معالجة خاصة للانتقالات المهمة
+      _handleStateTransition(oldState, updatedRoom.state);
+    }
+
+    // إشعار التحديث إذا تغير عدد اللاعبين
+    if (oldPlayersCount != updatedRoom.players.length) {
+      log('👥 تغير عدد اللاعبين من $oldPlayersCount إلى ${updatedRoom.players.length}');
+    }
+
+    // تحديث متغيرات التتبع
+    _lastKnownState = updatedRoom.state;
+    _lastPlayersCount = updatedRoom.players.length;
+
+    // إشعار فوري
     notifyListeners();
+
+    // إشعار إضافي بعد تأخير قصير للتأكد
+    Future.delayed(const Duration(milliseconds: 200), () {
+      notifyListeners();
+    });
+  }
+
+// أضف هذه الدالة الجديدة لمعالجة انتقالات الحالة:
+  void _handleStateTransition(GameState oldState, GameState newState) {
+    switch (newState) {
+      case GameState.voting:
+        if (oldState == GameState.playing) {
+          log('⏰ انتهت الجولة - بدء التصويت');
+          _isTransitioning = false; // إعادة تعيين حالة التبديل
+        }
+        break;
+
+      case GameState.continueVoting:
+        if (oldState == GameState.voting) {
+          log('🗳️ انتهى التصويت العادي - بدء تصويت الإكمال');
+        }
+        break;
+
+      case GameState.playing:
+        if (oldState == GameState.continueVoting || oldState == GameState.waiting) {
+          log('▶️ بدء جولة جديدة');
+        }
+        break;
+
+      case GameState.finished:
+        log('🏁 انتهت اللعبة');
+        break;
+
+      default:
+        break;
+    }
+  }
+
+// أضف هذه الدالة للتحقق من حالة اللاعب:
+  bool get isCurrentPlayerEliminated {
+    if (_currentPlayer == null || _currentRoom == null) return false;
+
+    // تحقق من وجود اللاعب في قائمة اللاعبين الحاليين
+    return !_currentRoom!.players.any((p) => p.id == _currentPlayer!.id);
   }
 
 // 4. دالة مساعدة للتحقق من حالة التصويت على الإكمال

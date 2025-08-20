@@ -223,14 +223,17 @@ class GameLogicService {
   /// بدء التصويت على إكمال الجولات
   Future<void> startContinueVoting(String roomId, int nextRound, List<dynamic> remainingPlayers) async {
     try {
+      log('🗳️ بدء التصويت على إكمال الجولات في الغرفة: $roomId');
+
       // تحديث حالة الغرفة للتصويت على الإكمال
       await _client.from('rooms').update({
         'state': 'continue_voting',
         'next_round': nextRound,
+        'round_start_time': null, // إزالة وقت الجولة
         'updated_at': DateTime.now().toIso8601String(),
       }).eq('id', roomId);
 
-      // إعادة تعيين حالة التصويت لجميع اللاعبين
+      // إعادة تعيين حالة التصويت لجميع اللاعبين المتبقين
       for (final player in remainingPlayers) {
         await _client.from('players').update({
           'is_voted': false,
@@ -238,9 +241,74 @@ class GameLogicService {
         }).eq('id', player['id']);
       }
 
-      log('بدء التصويت على إكمال الجولات في الغرفة $roomId');
+      log('✅ تم بدء التصويت على إكمال الجولات - اللاعبين: ${remainingPlayers.length}');
+
+      // التحقق من أن التحديث تم بنجاح
+      final verification = await _client
+          .from('rooms')
+          .select('state')
+          .eq('id', roomId)
+          .maybeSingle();
+
+      log('✓ تأكيد حالة الغرفة: ${verification?['state']}');
+
     } catch (e) {
-      log('خطأ في بدء تصويت الإكمال: $e');
+      log('❌ خطأ في بدء تصويت الإكمال: $e');
+      rethrow;
+    }
+  }
+
+// وأضف هذه الدالة الجديدة أيضاً:
+
+  /// التحقق من انتهاء تصويت الإكمال ومعالجة النتيجة
+  Future<void> processContinueVotingResult(String roomId) async {
+    try {
+      log('🔍 التحقق من نتائج التصويت على الإكمال في الغرفة: $roomId');
+
+      final roomData = await _client
+          .from('rooms')
+          .select('next_round, players!inner(*)')
+          .eq('id', roomId)
+          .eq('state', 'continue_voting')
+          .maybeSingle();
+
+      if (roomData == null) {
+        log('❌ الغرفة غير موجودة أو ليست في حالة تصويت الإكمال');
+        return;
+      }
+
+      final players = roomData['players'] as List;
+      final connectedPlayers = players.where((p) => p['is_connected'] == true).toList();
+      final votedPlayers = connectedPlayers.where((p) => p['is_voted'] == true).toList();
+
+      // التحقق من أن جميع اللاعبين صوتوا
+      if (votedPlayers.length < connectedPlayers.length) {
+        log('⏳ لم يصوت جميع اللاعبين بعد: ${votedPlayers.length}/${connectedPlayers.length}');
+        return;
+      }
+
+      // حساب الأصوات
+      final continueVotes = votedPlayers.where((p) => p['votes'] == 1).length;
+      final endVotes = votedPlayers.where((p) => p['votes'] == 0).length;
+      final nextRound = roomData['next_round'] ?? 2;
+
+      log('📊 نتائج التصويت - إكمال: $continueVotes، إنهاء: $endVotes');
+
+      if (continueVotes > endVotes) {
+        // الأغلبية تريد الإكمال
+        log('▶️ الأغلبية تريد الإكمال - بدء الجولة: $nextRound');
+        await startNewRound(roomId, nextRound, connectedPlayers);
+      } else {
+        // الأغلبية تريد الإنهاء أو تعادل
+        final remainingSpies = connectedPlayers.where((p) => p['role'] == 'spy').toList();
+        final winner = remainingSpies.isNotEmpty ? 'spy' : 'normal_players';
+        log('🏁 الأغلبية تريد الإنهاء - الفائز: $winner');
+        await endGame(roomId, winner);
+      }
+
+    } catch (e) {
+      log('❌ خطأ في معالجة نتائج تصويت الإكمال: $e');
+      rethrow;
     }
   }
 
