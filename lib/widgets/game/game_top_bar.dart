@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../../models/game_room_model.dart';
 import '../../models/player_model.dart';
 import '../../providers/game_provider.dart';
+import '../../providers/game_state.dart';
 import 'game_screen_mixin.dart';
 
 class GameTopBar extends StatelessWidget with GameScreenMixin {

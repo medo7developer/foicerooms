@@ -4,6 +4,7 @@ import '../models/game_room_model.dart';
 import '../providers/game_provider.dart';
 
 // استيراد الخدمات المقسمة
+import '../providers/game_state.dart';
 import 'room_service.dart';
 import 'player_service.dart';
 import 'game_logic_service.dart';

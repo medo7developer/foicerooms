@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
-
 import '../../../providers/game_provider.dart';
 import '../../models/game_room_model.dart';
 import '../../models/player_model.dart';
+import '../../providers/game_state.dart';
 
-// إضافة متغير للتحكم في اتصالات WebRTC في بداية الكلاس:
 class PlayingContent extends StatefulWidget {
   final GameRoom room;
   final Player currentPlayer;
@@ -29,6 +28,14 @@ class PlayingContent extends StatefulWidget {
 
 class _PlayingContentState extends State<PlayingContent> {
   bool _hasTriedConnection = false;
+  String? _currentWord; // متغير محلي لتخزين الكلمة
+
+  @override
+  void initState() {
+    super.initState();
+    // تحديث الكلمة عند بدء الحالة
+    _updateWord();
+  }
 
   @override
   void didUpdateWidget(PlayingContent oldWidget) {
@@ -38,12 +45,34 @@ class _PlayingContentState extends State<PlayingContent> {
     if (oldWidget.room.players.length != widget.room.players.length) {
       _hasTriedConnection = false;
     }
+
+    // تحديث الكلمة إذا تغيرت حالة الغرفة
+    if (oldWidget.room.state != widget.room.state ||
+        oldWidget.room.currentWord != widget.room.currentWord ||
+        oldWidget.currentPlayer.role != widget.currentPlayer.role) {
+      _updateWord();
+    }
+  }
+
+  // دالة لتحديث الكلمة الحالية
+  void _updateWord() {
+    if (!mounted) return;
+
+    setState(() {
+      // تحديد الكلمة بناءً على دور اللاعب
+      if (widget.currentPlayer.role == PlayerRole.spy) {
+        _currentWord = '??? أنت الجاسوس';
+      } else {
+        _currentWord = widget.room.currentWord ?? '';
+      }
+    });
+
+    // طباعة معلومات التصحيح
+    debugPrint('تحديث الكلمة: ${widget.currentPlayer.role}, الكلمة: $_currentWord, كلمة الغرفة: ${widget.room.currentWord}');
   }
 
   @override
   Widget build(BuildContext context) {
-    final word = widget.gameProvider.currentWordForPlayer;
-
     // محاولة الاتصال بالآخرين مرة واحدة فقط عند وجود لاعبين جدد
     if (!_hasTriedConnection && widget.room.players.length > 1) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -66,7 +95,7 @@ class _PlayingContentState extends State<PlayingContent> {
       child: Column(
         children: [
           // عرض الكلمة
-          _buildWordCard(word),
+          _buildWordCard(),
           const SizedBox(height: 30),
           // قائمة اللاعبين مع مؤشرات الصوت
           Expanded(child: _buildPlayersList()),
@@ -75,7 +104,7 @@ class _PlayingContentState extends State<PlayingContent> {
     );
   }
 
-  Widget _buildWordCard(String? word) {
+  Widget _buildWordCard() {
     return AnimatedBuilder(
       animation: widget.cardController,
       builder: (context, child) {
@@ -116,7 +145,7 @@ class _PlayingContentState extends State<PlayingContent> {
                 ),
                 const SizedBox(height: 20),
                 Text(
-                  word ?? '',
+                  _currentWord ?? '', // استخدام المتغير المحلي بدلاً من gameProvider.currentWordForPlayer
                   style: TextStyle(
                     fontSize: 32,
                     fontWeight: FontWeight.bold,

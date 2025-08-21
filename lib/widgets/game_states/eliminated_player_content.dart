@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../providers/game_provider.dart';
 import '../../models/game_room_model.dart';
 import '../../models/player_model.dart';
+import '../../providers/game_state.dart';
 
 class EliminatedPlayerContent extends StatelessWidget {
   final GameRoom room;

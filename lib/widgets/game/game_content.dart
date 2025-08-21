@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-
 import '../../models/player_model.dart';
 import '../../providers/game_provider.dart';
+import '../../providers/game_state.dart';
 import '../game_states/continue_voting_content.dart';
 import '../game_states/eliminated_player_content.dart';
 import '../game_states/waiting_content.dart';
@@ -32,11 +32,9 @@ class GameContent extends StatelessWidget {
   Widget build(BuildContext context) {
     // تحقق من حالة اللاعب أولاً
     final isEliminated = gameProvider.isCurrentPlayerEliminated;
-
     if (isEliminated) {
       // استيراد الملف الجديد في أعلى الملف:
       // import '../game_states/eliminated_player_content.dart';
-
       return EliminatedPlayerContent(
         room: room,
         currentPlayer: currentPlayer,
@@ -62,6 +60,13 @@ class GameContent extends StatelessWidget {
         return FinishedContent(room: room, currentPlayer: currentPlayer);
       case GameState.continueVoting:
         return ContinueVotingContent(room: room, currentPlayer: currentPlayer);
+      default:
+      // حالة افتراضية للتعامل مع أي حالة غير متوقعة
+        return const Scaffold(
+          body: Center(
+            child: Text('حالة لعبة غير معروفة'),
+          ),
+        );
     }
   }
 }

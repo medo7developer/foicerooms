@@ -4,6 +4,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
 
 import '../../providers/game_provider.dart';
+import '../../providers/game_state.dart';
 import '../../services/realtime_manager.dart';
 import '../../services/webrtc_services/webrtc_service.dart';
 import '../../services/supabase_service.dart';

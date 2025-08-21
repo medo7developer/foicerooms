@@ -2,6 +2,7 @@
 import 'package:voice_rooms_app/models/player_model.dart';
 
 import '../providers/game_provider.dart';
+import '../providers/game_state.dart';
 
 class GameRoom {
   final String id;

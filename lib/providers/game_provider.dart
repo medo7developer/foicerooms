@@ -1,40 +1,69 @@
 import 'dart:developer';
-
 import 'package:flutter/material.dart';
-
 import '../models/experience_models.dart';
 import '../models/game_room_model.dart';
 import '../models/player_model.dart';
 import '../services/experience_service.dart';
 import '../services/supabase_service.dart';
-
-enum GameState { waiting, playing, voting, continueVoting, finished }
-enum PlayerRole { normal, spy }
+import 'game_state_provider.dart';
+import 'game_room_provider.dart';
+import 'game_player_provider.dart';
+import 'game_sound_provider.dart';
+import 'game_rewards_provider.dart';
 
 class GameProvider extends ChangeNotifier {
-  GameRoom? _currentRoom;
-  Player? _currentPlayer;
-  List<GameRoom> _availableRooms = [];
+  // مزودي الخدمة
+  final GameStateProvider _gameStateProvider = GameStateProvider();
+  final GameRoomProvider _gameRoomProvider = GameRoomProvider();
+  final GamePlayerProvider _gamePlayerProvider = GamePlayerProvider();
+  final GameSoundProvider _gameSoundProvider = GameSoundProvider();
+  final GameRewardsProvider _gameRewardsProvider = GameRewardsProvider();
+
+  // الخدمات الخارجية
   SupabaseService? _supabaseService;
-// إضافة متغير للتحكم في حالة التبديل:
-  bool _isTransitioning = false;
   ExperienceService? _experienceService;
-  PlayerStats? _currentPlayerStats;
-  List<GameReward>? _lastGameRewards;
 
-  // Getters جديدة
-  PlayerStats? get currentPlayerStats => _currentPlayerStats;
-  List<GameReward>? get lastGameRewards => _lastGameRewards;
-// إضافة متغير للتحقق من معالجة المكافآت
-  bool _rewardsProcessed = false;
+  // Getters للوصول إلى المزودين
+  GameStateProvider get gameState => _gameStateProvider;
+  GameRoomProvider get gameRoom => _gameRoomProvider;
+  GamePlayerProvider get gamePlayer => _gamePlayerProvider;
+  GameSoundProvider get gameSound => _gameSoundProvider;
+  GameRewardsProvider get gameRewards => _gameRewardsProvider;
 
+  // Getters للخدمات
+  SupabaseService? get supabaseService => _supabaseService;
+  ExperienceService? get experienceService => _experienceService;
+
+  // Getters للوصول المباشر للبيانات
+  GameRoom? get currentRoom => _gameRoomProvider.currentRoom;
+  Player? get currentPlayer => _gamePlayerProvider.currentPlayer;
+  List<GameRoom> get availableRooms => _gameRoomProvider.availableRooms;
+  PlayerStats? get currentPlayerStats => _gameRewardsProvider.currentPlayerStats;
+  List<GameReward>? get lastGameRewards => _gameRewardsProvider.lastGameRewards;
+  Duration? get remainingTime => _gameStateProvider.remainingTime;
+  String? get currentWordForPlayer => _gameStateProvider.currentWordForPlayer;
+  bool get isCurrentPlayerSpy => _gamePlayerProvider.isCurrentPlayerSpy;
+  bool get isCurrentPlayerCreator => _gamePlayerProvider.isCurrentPlayerCreator;
+  bool get isCurrentPlayerEliminated => _gamePlayerProvider.isCurrentPlayerEliminated;
+  int get connectedPlayersCount => _gameRoomProvider.connectedPlayersCount;
+  bool get hasEnoughPlayers => _gameRoomProvider.hasEnoughPlayers;
+  bool get isInContinueVoting => _gameStateProvider.isInContinueVoting;
+  Map<String, int> get continueVotingResults => _gameStateProvider.continueVotingResults;
+  Map<String, dynamic> get gameStats => _gameStateProvider.gameStats;
+  Map<String, dynamic> get enhancedGameStats => _gameStateProvider.enhancedGameStats;
+  Map<String, dynamic> get lastUpdateInfo => _gameStateProvider.lastUpdateInfo;
+
+  // إضافة getter المطلوب
+  int get minimumPlayersRequired => 3; // الحد الأدنى لعدد اللاعبين المطلوبين لبدء اللعبة
+
+  // Setters
   set currentRoom(GameRoom? room) {
-    _currentRoom = room;
-    notifyListeners(); // عشان يعمل تحديث تلقائي للـ UI
+    _gameRoomProvider.currentRoom = room;
+    notifyListeners();
   }
 
   set currentPlayer(Player? player) {
-    _currentPlayer = player;
+    _gamePlayerProvider.currentPlayer = player;
     notifyListeners();
   }
 
@@ -49,167 +78,41 @@ class GameProvider extends ChangeNotifier {
     'جامعة', 'مصنع', 'محطة', 'حمام سباحة', 'مزرعة'
   ];
 
-  GameRoom? get currentRoom => _currentRoom;
-  Player? get currentPlayer => _currentPlayer;
-  List<GameRoom> get availableRooms => _availableRooms;
-  GameState? _lastKnownState;
-  int _lastPlayersCount = 0;
+  List<String> get gameWords => _gameWords;
 
+  // إعداد الخدمات
   void setSupabaseService(SupabaseService service) {
     _supabaseService = service;
+    _gameStateProvider.setSupabaseService(service);
+    _gameRoomProvider.setSupabaseService(service);
+    _gamePlayerProvider.setSupabaseService(service);
   }
 
-  // إضافة دالة للتحقق من التغييرات
-  bool hasStateChanged() {
-    return _lastKnownState != _currentRoom?.state;
+  void setExperienceService(ExperienceService service) {
+    _experienceService = service;
+    _gameRewardsProvider.setExperienceService(service);
   }
 
-  bool hasPlayersCountChanged() {
-    return _lastPlayersCount != (_currentRoom?.players.length ?? 0);
-  }
-
-// تحسين دالة الانضمام للغرفة مع إشعار فوري
+  // وظائف اللعبة الرئيسية
   bool joinRoom(String roomId, String playerId, String playerName) {
-    try {
-      // البحث عن الغرفة بأمان
-      GameRoom? targetRoom;
-
-      // البحث في قائمة الغرف المتاحة
-      for (final room in _availableRooms) {
-        if (room.id == roomId) {
-          targetRoom = room;
-          break;
-        }
-      }
-
-      // إذا لم توجد في المتاحة، تحقق من الغرفة الحالية
-      if (targetRoom == null && _currentRoom?.id == roomId) {
-        targetRoom = _currentRoom;
-      }
-
-      if (targetRoom == null) {
-        debugPrint('⚠️ الغرفة غير موجودة في البيانات المحلية: $roomId');
-        // بدلاً من الفشل، حاول إنشاء غرفة مؤقتة
-        targetRoom = GameRoom(
-          id: roomId,
-          name: 'غرفة تحت التحميل...',
-          creatorId: 'unknown',
-          maxPlayers: 8,
-          totalRounds: 3,
-          roundDuration: 300,
-          players: [],
-        );
-      }
-
-      // التحقق من امتلاء الغرفة (تخطي هذا التحقق إذا كانت البيانات مؤقتة)
-      if (targetRoom.name != 'غرفة تحت التحميل...' &&
-          targetRoom.players.length >= targetRoom.maxPlayers) {
-        debugPrint('⚠️ الغرفة ممتلئة محلياً');
-        return false;
-      }
-
-      // التحقق من وجود اللاعب مسبقاً
-      final existingPlayerIndex = targetRoom.players.indexWhere((p) => p.id == playerId);
-
-      Player newPlayer;
-      if (existingPlayerIndex != -1) {
-        // تحديث بيانات اللاعب الموجود
-        newPlayer = targetRoom.players[existingPlayerIndex].copyWith(
-          isConnected: true,
-          name: playerName,
-        );
-        targetRoom.players[existingPlayerIndex] = newPlayer;
-        debugPrint('✅ تم تحديث بيانات اللاعب الموجود: $playerName');
-      } else {
-        // إضافة لاعب جديد
-        newPlayer = Player(
-          id: playerId,
-          name: playerName,
-          isConnected: true,
-        );
-        targetRoom.players = [...targetRoom.players, newPlayer];
-        debugPrint('✅ تم إضافة لاعب جديد: $playerName');
-      }
-
-      // تحديث البيانات المحلية
-      _currentRoom = targetRoom;
-      _currentPlayer = newPlayer;
-      _lastPlayersCount = targetRoom.players.length;
-
-      // إزالة الغرفة من القائمة المتاحة إذا كانت موجودة
-      _availableRooms.removeWhere((room) => room.id == roomId);
-
-      // إشعار فوري بالتحديث
+    final result = _gameRoomProvider.joinRoom(roomId, playerId, playerName);
+    if (result) {
+      _gamePlayerProvider.currentPlayer = _gameRoomProvider.currentRoom?.players.firstWhere(
+            (p) => p.id == playerId,
+        orElse: () => _gamePlayerProvider.currentPlayer!,
+      );
       notifyListeners();
-
-      // إشعار إضافي بعد تأخير قصير للتأكد
-      Future.delayed(const Duration(milliseconds: 100), () {
-        if (_currentRoom?.id == roomId) {
-          notifyListeners();
-        }
-      });
-
-      debugPrint('✅ تم الانضمام بنجاح محلياً - عدد اللاعبين: ${targetRoom.players.length}');
-      return true;
-
-    } catch (e) {
-      debugPrint('❌ خطأ في الانضمام للغرفة محلياً: $e');
-      return false;
     }
+    return result;
   }
 
-// إضافة دالة جديدة للتحديث المتقدم من الخادم
   void updateRoomFromServer(GameRoom serverRoom, String playerId) {
-    try {
-      debugPrint('🔄 تحديث الغرفة من الخادم: ${serverRoom.id}');
-
-      // تحديث بيانات الغرفة الحالية
-      _currentRoom = serverRoom;
-
-      // العثور على اللاعب الحالي في البيانات المحدثة
-      Player? updatedPlayer;
-      for (final player in serverRoom.players) {
-        if (player.id == playerId) {
-          updatedPlayer = player;
-          break;
-        }
-      }
-
-      if (updatedPlayer != null) {
-        _currentPlayer = updatedPlayer;
-        debugPrint('✅ تم العثور على اللاعب في البيانات المحدثة: ${updatedPlayer.name}');
-      } else {
-        debugPrint('⚠️ لم يتم العثور على اللاعب في البيانات المحدثة');
-        // إنشاء بيانات مؤقتة للاعب
-        _currentPlayer = Player(
-          id: playerId,
-          name: _currentPlayer?.name ?? 'لاعب',
-          isConnected: true,
-        );
-      }
-
-      // تحديث متغيرات التتبع
-      _lastPlayersCount = serverRoom.players.length;
-
-      // إشعار متعدد للتأكد من التحديث
-      notifyListeners();
-
-      Future.delayed(const Duration(milliseconds: 50), () {
-        notifyListeners();
-      });
-
-      Future.delayed(const Duration(milliseconds: 200), () {
-        notifyListeners();
-      });
-
-      debugPrint('✅ تم تحديث الغرفة من الخادم بنجاح');
-
-    } catch (e) {
-      debugPrint('❌ خطأ في تحديث الغرفة من الخادم: $e');
-    }
+    _gameRoomProvider.updateRoomFromServer(serverRoom, playerId);
+    _gamePlayerProvider.updatePlayerFromServer(serverRoom, playerId);
+    _gameStateProvider.updateStateFromServer(serverRoom);
+    notifyListeners();
   }
 
-// تحسين دالة createRoom لضمان المزامنة
   GameRoom createRoom({
     required String name,
     required String creatorId,
@@ -217,892 +120,216 @@ class GameProvider extends ChangeNotifier {
     required int maxPlayers,
     required int totalRounds,
     required int roundDuration,
-    String? roomId, // إضافة معامل اختياري للمعرف
+    String? roomId,
   }) {
-    try {
-      final room = GameRoom(
-        id: roomId ?? DateTime.now().millisecondsSinceEpoch.toString(),
-        name: name,
-        creatorId: creatorId,
-        maxPlayers: maxPlayers,
-        totalRounds: totalRounds,
-        roundDuration: roundDuration,
-      );
+    final room = _gameRoomProvider.createRoom(
+      name: name,
+      creatorId: creatorId,
+      creatorName: creatorName,
+      maxPlayers: maxPlayers,
+      totalRounds: totalRounds,
+      roundDuration: roundDuration,
+      roomId: roomId,
+    );
 
-      // إضافة المنشئ كأول لاعب
-      final creator = Player(
-        id: creatorId,
-        name: creatorName,
-        isConnected: true,
-      );
-      room.players = [creator];
-
-      // تحديث البيانات المحلية
-      _availableRooms.add(room);
-      _currentRoom = room;
-      _currentPlayer = creator;
-      _lastPlayersCount = 1;
-
-      // إشعار فوري
-      notifyListeners();
-
-      // إشعار إضافي للتأكد
-      Future.delayed(const Duration(milliseconds: 100), () {
-        notifyListeners();
-      });
-
-      debugPrint('✅ تم إنشاء الغرفة محلياً: ${room.name}');
-      return room;
-
-    } catch (e) {
-      debugPrint('❌ خطأ في إنشاء الغرفة محلياً: $e');
-      throw e;
-    }
+    _gamePlayerProvider.currentPlayer = room.players.firstWhere((p) => p.id == creatorId);
+    notifyListeners();
+    return room;
   }
 
-// إضافة دالة للتحقق من صحة البيانات وإصلاحها
-  bool validateAndFixGameState() {
-    try {
-      if (_currentRoom == null) {
-        debugPrint('⚠️ لا توجد غرفة حالية');
-        return false;
-      }
-
-      if (_currentPlayer == null) {
-        debugPrint('⚠️ لا يوجد لاعب حالي');
-        return false;
-      }
-
-      // التحقق من وجود اللاعب في قائمة اللاعبين
-      final playerExists = _currentRoom!.players.any((p) => p.id == _currentPlayer!.id);
-      if (!playerExists) {
-        debugPrint('⚠️ اللاعب الحالي غير موجود في قائمة اللاعبين، جاري الإصلاح...');
-
-        // إضافة اللاعب للقائمة
-        _currentRoom!.players.add(_currentPlayer!);
-        notifyListeners();
-
-        debugPrint('✅ تم إصلاح بيانات اللاعب');
-      }
-
-      return true;
-    } catch (e) {
-      debugPrint('❌ خطأ في التحقق من البيانات: $e');
-      return false;
-    }
-  }
-
-  // تحديث دالة checkRoundTimeout:
-  void checkRoundTimeout() {
-    if (_currentRoom == null ||
-        _currentRoom!.state != GameState.playing ||
-        _isTransitioning) return;
-
-    final remainingTime = this.remainingTime;
-    if (remainingTime != null && remainingTime.inSeconds <= 0) {
-      _isTransitioning = true;
-      debugPrint('انتهى وقت الجولة - بدء التصويت');
-
-      // استخدام الخادم لإنهاء الجولة
-      _endRoundOnServer();
-    }
-  }
-
-// إضافة دالة لإنهاء الجولة عبر الخادم:
-  Future<void> _endRoundOnServer() async {
-    if (_currentRoom == null || _supabaseService == null) return;
-
-    try {
-      final success = await _supabaseService!.endRoundAndStartVoting(_currentRoom!.id);
-      if (success) {
-        debugPrint('تم إنهاء الجولة على الخادم');
-      } else {
-        debugPrint('فشل في إنهاء الجولة على الخادم');
-        _isTransitioning = false; // إعادة تعيين في حالة الفشل
-      }
-    } catch (e) {
-      debugPrint('خطأ في إنهاء الجولة على الخادم: $e');
-      _isTransitioning = false;
-    }
-  }
-
-// إزالة الدالة startVoting القديمة أو تحديثها:
-  void startVoting() {
-    if (_currentRoom == null || _isTransitioning) return;
-
-    // هذه الدالة لن تستخدم مباشرة، سيتم استخدام الخادم
-    debugPrint('تم استدعاء startVoting - يجب استخدام الخادم');
-  }
-
-  // تحسين دالة إعادة الانضمام
   void rejoinRoom(GameRoom room, String playerId) {
-    try {
-      _currentRoom = room;
-      _lastKnownState = room.state;
-      _lastPlayersCount = room.players.length;
-
-      // البحث عن اللاعب الحالي بأمان
-      Player? currentPlayer;
-      for (final player in room.players) {
-        if (player.id == playerId) {
-          currentPlayer = player;
-          break;
-        }
-      }
-
-      _currentPlayer = currentPlayer;
-
-      // إشعار فوري
-      notifyListeners();
-
-      debugPrint('تم إعادة الانضمام للغرفة: ${room.name} - الحالة: ${room.state}');
-    } catch (e) {
-      debugPrint('خطأ في إعادة الانضمام للغرفة: $e');
-    }
-  }
-
-  // إضافة دالة للحصول على معلومات التحديث الأخير
-  Map<String, dynamic> get lastUpdateInfo => {
-    'roomId': _currentRoom?.id,
-    'state': _currentRoom?.state.toString(),
-    'playersCount': _currentRoom?.players.length ?? 0,
-    'connectedCount': connectedPlayersCount,
-    'lastStateChange': _lastKnownState.toString(),
-    'timestamp': DateTime.now().toIso8601String(),
-  };
-
-  // إضافة دالة لفرض التحديث
-  void forceUpdate() {
-    debugPrint('فرض تحديث واجهة المستخدم');
+    _gameRoomProvider.rejoinRoom(room, playerId);
+    _gamePlayerProvider.rejoinRoom(room, playerId);
+    _gameStateProvider.updateStateFromServer(room);
     notifyListeners();
   }
 
-  // تحسين دالة التحقق من إمكانية بدء اللعبة
-  void _checkAutoStart(GameRoom room, String playerId) {
-    final connectedPlayers = room.players.where((p) => p.isConnected).length;
-    final canAutoStart = connectedPlayers >= room.maxPlayers &&
-        room.state == GameState.waiting;
-
-    if (canAutoStart) {
-      debugPrint('اكتمل العدد المطلوب (${connectedPlayers}/${room.maxPlayers}) - يمكن بدء اللعبة');
-
-      // إشعار بإمكانية البدء
-      if (room.creatorId == playerId) {
-        debugPrint('المنشئ متصل - يمكن بدء اللعبة');
-      }
-
-      // إشعار فوري بالتغيير
-      notifyListeners();
-    }
-  }
-
-  // دالة لمراقبة حالة الاتصال
   void updateConnectionStatus(String playerId, bool isConnected) {
-    if (_currentRoom == null) return;
-
-    try {
-      final playerIndex = _currentRoom!.players.indexWhere((p) => p.id == playerId);
-      if (playerIndex != -1) {
-        _currentRoom!.players[playerIndex] = _currentRoom!.players[playerIndex].copyWith(
-            isConnected: isConnected
-        );
-
-        if (_currentPlayer?.id == playerId) {
-          _currentPlayer = _currentRoom!.players[playerIndex];
-        }
-
-        debugPrint('تحديث حالة الاتصال للاعب $playerId: $isConnected');
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint('خطأ في تحديث حالة الاتصال: $e');
-    }
+    _gameRoomProvider.updateConnectionStatus(playerId, isConnected);
+    _gamePlayerProvider.updateConnectionStatus(playerId, isConnected);
+    notifyListeners();
   }
 
-  // 2. إضافة دالة التصويت على الإكمال في كلاس GameProvider
-  Future<bool> voteToContinueWithServer(bool continuePlaying) async {
-    if (_supabaseService == null || _currentPlayer == null) return false;
-
-    try {
-      await _supabaseService!.voteToContinue(_currentPlayer!.id, continuePlaying);
-
-      // تحديث حالة اللاعب محلياً
-      final playerIndex = _currentRoom!.players.indexWhere((p) => p.id == _currentPlayer!.id);
-      if (playerIndex != -1) {
-        _currentRoom!.players[playerIndex].isVoted = true;
-        _currentRoom!.players[playerIndex].votes = continuePlaying ? 1 : 0;
-        notifyListeners();
-      }
-
-      return true;
-    } catch (e) {
-      log('خطأ في التصويت على الإكمال: $e');
-      return false;
-    }
-  }
-
-// تعديل updateRoomFromRealtime
   void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
-    if (_currentRoom == null) return;
-
-    final oldState = _currentRoom!.state;
-    final oldWinner = _currentRoom!.winner;
-
-    // تحديث بيانات الغرفة
-    _currentRoom = updatedRoom;
-
-    // العثور على اللاعب الحالي
-    Player? updatedPlayer;
-    for (final player in updatedRoom.players) {
-      if (player.id == playerId) {
-        updatedPlayer = player;
-        break;
-      }
-    }
-
-    if (updatedPlayer == null) {
-      log('⚠️ اللاعب $playerId تم إقصاؤه من الغرفة');
-      _currentPlayer = Player(
-        id: playerId,
-        name: _currentPlayer?.name ?? 'لاعب محذوف',
-        isConnected: false,
-        isVoted: true,
-        votes: 0,
-        role: _currentPlayer?.role ?? PlayerRole.normal,
-      );
-    } else {
-      _currentPlayer = updatedPlayer;
-    }
-
-    // فحص انتهاء اللعبة ومعالجة المكافآت
-    if (oldState != GameState.finished &&
-        updatedRoom.state == GameState.finished &&
-        !_rewardsProcessed) {
-
-      log('🏁 تم انتهاء اللعبة - الفائز: ${updatedRoom.winner}');
-      _rewardsProcessed = true;
-
-      // تأخير قصير للتأكد من استقرار البيانات
-      Future.delayed(const Duration(seconds: 2), () {
-        processGameEndWithRewards();
-      });
-    }
-
-    // إعادة تعيين معالجة المكافآت للألعاب الجديدة
-    if (updatedRoom.state == GameState.waiting) {
-      _rewardsProcessed = false;
-    }
-
-    // تحديث متغيرات التتبع
-    _lastKnownState = updatedRoom.state;
-    _lastPlayersCount = updatedRoom.players.length;
-
-    // إشعارات متعددة للتأكد من التحديث
-    notifyListeners();
-    Future.delayed(const Duration(milliseconds: 50), () {
-      if (_currentRoom != null) notifyListeners();
-    });
-    Future.delayed(const Duration(milliseconds: 200), () {
-      if (_currentRoom != null) notifyListeners();
-    });
-  }
-
-// تحديث processGameEndWithRewards لتكون أكثر أماناً
-  Future<void> processGameEndWithRewards() async {
-    if (_currentRoom == null || _experienceService == null) {
-      log('⚠️ لا يمكن معالجة المكافآت - بيانات مفقودة');
-      return;
-    }
-
-    if (_currentRoom!.state != GameState.finished) {
-      log('⚠️ اللعبة لم تنته بعد، لا يمكن معالجة المكافآت');
-      return;
-    }
-
-    try {
-      log('🎁 بدء معالجة مكافآت اللعبة...');
-
-      // تحديد الفائز من بيانات الغرفة
-      String winner = _currentRoom!.winner ?? 'normal_players';
-
-      log('📊 الفائز: $winner، الجاسوس المكشوف: ${_currentRoom!.revealedSpyId}');
-
-      // معالجة مكافآت جميع اللاعبين
-      final allRewards = await _experienceService!.processRoomGameResult(
-        room: _currentRoom!,
-        winner: winner,
-        revealedSpyId: _currentRoom!.revealedSpyId,
-      );
-
-      log('✅ تم معالجة مكافآت ${allRewards.length} لاعبين');
-
-      // احفظ مكافآت اللاعب الحالي
-      if (_currentPlayer != null && allRewards.containsKey(_currentPlayer!.id)) {
-        _lastGameRewards = allRewards[_currentPlayer!.id];
-        log('🎁 تم حفظ مكافآت اللاعب الحالي: ${_lastGameRewards?.length} مكافأة');
-
-        // إعادة تحميل الإحصائيات المحدثة
-        await loadPlayerStats(_currentPlayer!.id);
-      }
-
-      notifyListeners();
-    } catch (e) {
-      log('❌ خطأ في معالجة مكافآت اللعبة: $e');
-    }
-  }
-
-// أضف هذه الدالة الجديدة لمعالجة انتقالات الحالة:
-  void _handleStateTransition(GameState oldState, GameState newState) {
-    switch (newState) {
-      case GameState.voting:
-        if (oldState == GameState.playing) {
-          log('⏰ انتهت الجولة - بدء التصويت');
-          _isTransitioning = false; // إعادة تعيين حالة التبديل
-        }
-        break;
-
-      case GameState.continueVoting:
-        if (oldState == GameState.voting) {
-          log('🗳️ انتهى التصويت العادي - بدء تصويت الإكمال');
-        }
-        break;
-
-      case GameState.playing:
-        if (oldState == GameState.continueVoting || oldState == GameState.waiting) {
-          log('▶️ بدء جولة جديدة');
-        }
-        break;
-
-      case GameState.finished:
-        log('🏁 انتهت اللعبة');
-        break;
-
-      default:
-        break;
-    }
-  }
-
-// أضف هذه الدالة للتحقق من حالة اللاعب:
-  bool get isCurrentPlayerEliminated {
-    if (_currentPlayer == null || _currentRoom == null) return false;
-
-    // تحقق من وجود اللاعب في قائمة اللاعبين الحاليين
-    return !_currentRoom!.players.any((p) => p.id == _currentPlayer!.id);
-  }
-
-// 4. دالة مساعدة للتحقق من حالة التصويت على الإكمال
-  bool get isInContinueVoting => _currentRoom?.state == GameState.continueVoting;
-
-// 5. دالة للحصول على عدد الأصوات في تصويت الإكمال
-  Map<String, int> get continueVotingResults {
-    if (_currentRoom == null ||
-        _currentRoom!.state != GameState.continueVoting) {
-      return {'continue': 0, 'end': 0, 'pending': 0};
-    }
-
-    int continueVotes = 0;
-    int endVotes = 0;
-    int pendingVotes = 0;
-
-    for (final player in _currentRoom!.players) {
-      if (player.isVoted) {
-        if (player.votes == 1) {
-          continueVotes++;
-        } else {
-          endVotes++;
-        }
-      } else {
-        pendingVotes++;
-      }
-    }
-
-    return {
-      'continue': continueVotes,
-      'end': endVotes,
-      'pending': pendingVotes,
-    };
-  }
-
-    // دالة للحصول على إحصائيات مفصلة
-  @override
-  Map<String, dynamic> get enhancedGameStats => {
-    'totalPlayers': _currentRoom?.players.length ?? 0,
-    'connectedPlayers': connectedPlayersCount,
-    'disconnectedPlayers': (_currentRoom?.players.length ?? 0) - connectedPlayersCount,
-    'currentRound': _currentRoom?.currentRound ?? 0,
-    'totalRounds': _currentRoom?.totalRounds ?? 0,
-    'gameState': _currentRoom?.state.toString() ?? 'unknown',
-    'isPlayerSpy': isCurrentPlayerSpy,
-    'isCreator': isCurrentPlayerCreator,
-    'canStart': canStartGame(),
-    'roomId': _currentRoom?.id,
-    'playerId': _currentPlayer?.id,
-    'lastUpdate': DateTime.now().millisecondsSinceEpoch,
-    'stateChanged': hasStateChanged(),
-    'playersChanged': hasPlayersCountChanged(),
-  };
-
-  // دالة جديدة للمنشئ لبدء اللعبة يدوياً
-  bool canStartGame() {
-    if (_currentRoom == null || _currentPlayer == null) return false;
-
-    // التحقق من أن اللاعب الحالي هو المنشئ
-    if (_currentRoom!.creatorId != _currentPlayer!.id) return false;
-
-    // التحقق من حالة الغرفة
-    if (_currentRoom!.state != GameState.waiting) return false;
-
-    // التحقق من العدد الأدنى للاعبين
-    final connectedPlayers = _currentRoom!.players.where((p) => p.isConnected).length;
-    return connectedPlayers >= 3; // الحد الأدنى 3 لاعبين
-  }
-
-  // تحسين دالة بدء اللعبة
-  bool startGameManually() {
-    if (!canStartGame()) {
-      debugPrint('لا يمكن بدء اللعبة - شروط غير مكتملة');
-      return false;
-    }
-
-    _startGame();
-    return true;
-  }
-
-  // إضافة getter لمعرفة ما إذا كان اللاعب الحالي هو المنشئ
-  bool get isCurrentPlayerCreator {
-    return _currentRoom?.creatorId == _currentPlayer?.id;
-  }
-
-  // إضافة getter لعدد اللاعبين المتصلين
-  int get connectedPlayersCount {
-    return _currentRoom?.players.where((p) => p.isConnected).length ?? 0;
-  }
-
-  // إضافة getter للحد الأدنى المطلوب
-  int get minimumPlayersRequired => 3;
-
-  // إضافة getter لمعرفة ما إذا كان العدد كافياً
-  bool get hasEnoughPlayers {
-    return connectedPlayersCount >= minimumPlayersRequired;
-  }
-
-  // بدء اللعبة مع التحقق من الأمان
-  void startGame() {
-    _startGame();
-  }
-
-  // بدء اللعبة (دالة داخلية)
-  void _startGame() {
-    if (_currentRoom == null || _currentRoom!.players.isEmpty) {
-      debugPrint('لا توجد غرفة أو لاعبين لبدء اللعبة');
-      return;
-    }
-
-    _currentRoom!.state = GameState.playing;
-    _currentRoom!.currentRound = 1;
-    _startNewRound();
-  }
-
-  // بدء جولة جديدة مع تحسينات
-  void _startNewRound() {
-    if (_currentRoom == null || _currentRoom!.players.isEmpty) return;
-
-    try {
-      // إنشاء نسخة من قائمة اللاعبين للخلط
-      final playersToShuffle = List<Player>.from(_currentRoom!.players);
-      playersToShuffle.shuffle();
-
-      // اختيار الجاسوس عشوائياً
-      final spyIndex = DateTime.now().millisecond % playersToShuffle.length;
-      _currentRoom!.spyId = playersToShuffle[spyIndex].id;
-
-      // تعيين الأدوار وإعادة تعيين الإحصائيات
-      for (int i = 0; i < _currentRoom!.players.length; i++) {
-        final playerId = _currentRoom!.players[i].id;
-        final isSpyPlayer = playerId == _currentRoom!.spyId;
-
-        _currentRoom!.players[i] = _currentRoom!.players[i].copyWith(
-          role: isSpyPlayer ? PlayerRole.spy : PlayerRole.normal,
-          votes: 0,
-          isVoted: false,
-        );
-      }
-
-      // تحديث دور اللاعب الحالي
-      if (_currentPlayer != null) {
-        final currentPlayerIndex = _currentRoom!.players.indexWhere((p) => p.id == _currentPlayer!.id);
-        if (currentPlayerIndex != -1) {
-          _currentPlayer = _currentRoom!.players[currentPlayerIndex];
-        }
-      }
-
-      // اختيار كلمة عشوائية
-      final shuffledWords = List<String>.from(_gameWords);
-      shuffledWords.shuffle();
-      _currentRoom!.currentWord = shuffledWords.first;
-      _currentRoom!.roundStartTime = DateTime.now();
-
-      debugPrint('بدأت جولة جديدة - الجاسوس: ${_currentRoom!.spyId}, الكلمة: ${_currentRoom!.currentWord}');
-
-      notifyListeners();
-
-      // انتهاء الجولة تلقائياً
-      Future.delayed(Duration(seconds: _currentRoom!.roundDuration), () {
-        if (_currentRoom?.state == GameState.playing &&
-            _currentRoom?.currentRound == _currentRoom?.currentRound) {
-          startVoting();
-        }
-      });
-    } catch (e) {
-      debugPrint('خطأ في بدء الجولة الجديدة: $e');
-    }
-  }
-
-  // التصويت على لاعب مع التحقق الآمن
-  void votePlayer(String voterId, String targetId) {
-    if (_currentRoom == null || _currentRoom!.state != GameState.voting) {
-      debugPrint('لا يمكن التصويت في هذا الوقت');
-      return;
-    }
-
-    try {
-      // العثور على اللاعب المصوت بأمان
-      int voterIndex = -1;
-      for (int i = 0; i < _currentRoom!.players.length; i++) {
-        if (_currentRoom!.players[i].id == voterId) {
-          voterIndex = i;
-          break;
-        }
-      }
-
-      if (voterIndex == -1) {
-        debugPrint('اللاعب المصوت غير موجود: $voterId');
-        return;
-      }
-
-      if (_currentRoom!.players[voterIndex].isVoted) {
-        debugPrint('اللاعب صوت مسبقاً');
-        return;
-      }
-
-      // العثور على الهدف بأمان
-      int targetIndex = -1;
-      for (int i = 0; i < _currentRoom!.players.length; i++) {
-        if (_currentRoom!.players[i].id == targetId) {
-          targetIndex = i;
-          break;
-        }
-      }
-
-      if (targetIndex == -1) {
-        debugPrint('اللاعب المستهدف غير موجود: $targetId');
-        return;
-      }
-
-      // تسجيل التصويت
-      _currentRoom!.players[voterIndex] = _currentRoom!.players[voterIndex].copyWith(isVoted: true);
-      _currentRoom!.players[targetIndex] = _currentRoom!.players[targetIndex].copyWith(
-          votes: _currentRoom!.players[targetIndex].votes + 1
-      );
-
-      // التحقق من انتهاء التصويت
-      final totalVoted = _currentRoom!.players.where((p) => p.isVoted).length;
-      if (totalVoted >= _currentRoom!.players.length) {
-        _endRound();
-      }
-
-      notifyListeners();
-      debugPrint('تم تسجيل صوت من $voterId لـ $targetId');
-    } catch (e) {
-      debugPrint('خطأ في التصويت: $e');
-    }
-  }
-
-  // انتهاء الجولة مع تحسينات
-  void _endRound() {
-    if (_currentRoom == null) return;
-
-    try {
-      // العثور على اللاعب الأكثر تصويتاً
-      if (_currentRoom!.players.isEmpty) return;
-
-      final sortedPlayers = List<Player>.from(_currentRoom!.players);
-      sortedPlayers.sort((a, b) => b.votes.compareTo(a.votes));
-      final mostVoted = sortedPlayers.first;
-
-      debugPrint('اللاعب الأكثر تصويتاً: ${mostVoted.name} (${mostVoted.votes} أصوات)');
-
-      // إزالة اللاعب الأكثر تصويتاً
-      _currentRoom!.players.removeWhere((p) => p.id == mostVoted.id);
-
-      // إذا كان اللاعب المحذوف هو اللاعب الحالي
-      if (_currentPlayer?.id == mostVoted.id) {
-        _currentPlayer = null;
-      }
-
-      // التحقق من نتيجة اللعبة
-      final remainingSpies = _currentRoom!.players.where((p) => p.role == PlayerRole.spy).toList();
-      final normalPlayers = _currentRoom!.players.where((p) => p.role == PlayerRole.normal).toList();
-
-      if (remainingSpies.isEmpty) {
-        // الجاسوس تم إقصاؤه - فوز اللاعبين العاديين
-        debugPrint('فوز اللاعبين العاديين - تم إقصاء الجاسوس');
-        _currentRoom!.state = GameState.finished;
-      } else if (normalPlayers.length <= 1) {
-        // بقي الجاسوس مع لاعب واحد أو أقل - فوز الجاسوس
-        debugPrint('فوز الجاسوس - بقي مع عدد قليل من اللاعبين');
-        _currentRoom!.state = GameState.finished;
-      } else if (_currentRoom!.currentRound >= _currentRoom!.totalRounds) {
-        // انتهاء الجولات - فوز الجاسوس
-        debugPrint('فوز الجاسوس - انتهاء الجولات');
-        _currentRoom!.state = GameState.finished;
-      } else {
-        // جولة جديدة
-        _currentRoom!.currentRound++;
-        debugPrint('بدء جولة جديدة رقم ${_currentRoom!.currentRound}');
-        _startNewRound();
-      }
-
-      notifyListeners();
-    } catch (e) {
-      debugPrint('خطأ في انتهاء الجولة: $e');
-    }
-  }
-
-  // تحديث قائمة الغرف المتاحة
-  void updateAvailableRooms(List<GameRoom> rooms) {
-    _availableRooms = rooms;
+    _gameRoomProvider.updateRoomFromRealtime(updatedRoom, playerId);
+    _gamePlayerProvider.updatePlayerFromRealtime(updatedRoom, playerId);
+    _gameStateProvider.updateStateFromRealtime(updatedRoom);
+    _gameRewardsProvider.checkGameEndRewards(updatedRoom, _gamePlayerProvider.currentPlayer);
     notifyListeners();
   }
 
-  // مغادرة الغرفة مع تنظيف آمن
   void leaveRoom() {
-    try {
-      if (_currentRoom != null && _currentPlayer != null) {
-        // إزالة اللاعب من قائمة اللاعبين
-        _currentRoom!.players.removeWhere((p) => p.id == _currentPlayer!.id);
-
-        // إذا كان مالك الغرفة، إزالة الغرفة من القائمة
-        if (_currentRoom!.creatorId == _currentPlayer!.id) {
-          _availableRooms.removeWhere((room) => room.id == _currentRoom!.id);
-        }
-      }
-
-      _currentRoom = null;
-      _currentPlayer = null;
-      notifyListeners();
-      debugPrint('تم مغادرة الغرفة');
-    } catch (e) {
-      debugPrint('خطأ في مغادرة الغرفة: $e');
-    }
+    _gameRoomProvider.leaveRoom();
+    _gamePlayerProvider.leaveRoom();
+    _gameStateProvider.resetState();
+    _gameSoundProvider.stopAllSounds();
+    notifyListeners();
   }
 
-  // معلومات الوقت المتبقي
-  Duration? get remainingTime {
-    if (_currentRoom?.roundStartTime == null) return null;
-
-    try {
-      final elapsed = DateTime.now().difference(_currentRoom!.roundStartTime!);
-      final total = Duration(seconds: _currentRoom!.roundDuration);
-      final remaining = total - elapsed;
-
-      return remaining.isNegative ? Duration.zero : remaining;
-    } catch (e) {
-      debugPrint('خطأ في حساب الوقت المتبقي: $e');
-      return null;
-    }
-  }
-
-  // الحصول على الكلمة للاعب الحالي
-  String? get currentWordForPlayer {
-    if (_currentRoom == null || _currentPlayer == null) return null;
-
-    try {
-      return _currentPlayer!.role == PlayerRole.spy
-          ? '??? أنت الجاسوس'
-          : _currentRoom!.currentWord;
-    } catch (e) {
-      debugPrint('خطأ في الحصول على الكلمة: $e');
-      return null;
-    }
-  }
-
-  // التحقق من حالة اللعبة
-  bool get isGameActive => _currentRoom != null && _currentPlayer != null;
-
-  // التحقق من كون اللاعب جاسوساً
-  bool get isCurrentPlayerSpy => _currentPlayer?.role == PlayerRole.spy;
-
-  // الحصول على معلومات إحصائية
-  Map<String, dynamic> get gameStats => {
-    'totalPlayers': _currentRoom?.players.length ?? 0,
-    'connectedPlayers': connectedPlayersCount,
-    'currentRound': _currentRoom?.currentRound ?? 0,
-    'totalRounds': _currentRoom?.totalRounds ?? 0,
-    'gameState': _currentRoom?.state.toString() ?? 'unknown',
-    'isPlayerSpy': isCurrentPlayerSpy,
-  };
-
-  // دالة لبدء اللعبة مع المزامنة مع الخادم
-  Future<bool> startGameWithServer() async {
-    if (_currentRoom == null || _currentPlayer == null) return false;
-
-    try {
-      final supabaseService = SupabaseService(); // يجب حقنه بدلاً من إنشاء instance جديد
-      final success = await supabaseService.startGameByCreator(
-          _currentRoom!.id,
-          _currentPlayer!.id
-      );
-
-      if (success) {
-        debugPrint('تم بدء اللعبة على الخادم');
-        // التحديثات ستأتي من realtime
-        return true;
-      } else {
-        debugPrint('فشل في بدء اللعبة على الخادم');
-        return false;
-      }
-    } catch (e) {
-      debugPrint('خطأ في بدء اللعبة على الخادم: $e');
-      return false;
-    }
-  }
-
-  // دالة لمزامنة التصويت مع الخادم
-  Future<bool> votePlayerWithServer(String targetId) async {
-    if (_currentRoom == null ||
-        _currentPlayer == null ||
-        _currentRoom!.state != GameState.voting ||
-        _currentPlayer!.isVoted) {
-      return false;
-    }
-
-    try {
-      final supabaseService = SupabaseService(); // يجب حقنه
-      await supabaseService.updateVote(_currentPlayer!.id, targetId);
-
-      debugPrint('تم تسجيل الصوت على الخادم');
-      // التحديثات ستأتي من realtime
-      return true;
-    } catch (e) {
-      debugPrint('خطأ في التصويت على الخادم: $e');
-      return false;
-    }
-  }
-
-  // دالة للتحقق من حالة الاتصال بالخادم
-  bool get isConnectedToServer => _currentRoom != null && _currentPlayer != null;
-
-  // دالة لإعادة تعيين كل شيء (للاستخدام عند الأخطاء)
   void resetAll() {
-    _currentRoom = null;
-    _currentPlayer = null;
-    _availableRooms.clear();
+    _gameRoomProvider.resetAll();
+    _gamePlayerProvider.resetAll();
+    _gameStateProvider.resetState();
+    _gameSoundProvider.stopAllSounds();
+    _gameRewardsProvider.resetRewards();
     notifyListeners();
-    debugPrint('تم إعادة تعيين جميع بيانات اللعبة');
   }
 
-  // إضافة هذه الدالة في GameProvider
-  void checkAndProcessGameRewards() {
-    if (_currentRoom?.state == GameState.finished &&
-        _currentRoom?.winner != null &&
-        _lastGameRewards == null) {
-
-      log('🎁 معالجة مكافآت نهاية اللعبة');
-      processGameEndWithRewards();
-    }
+  // وظائف بدء اللعبة
+  bool canStartGame() {
+    return _gameStateProvider.canStartGame(
+      _gameRoomProvider.currentRoom,
+      _gamePlayerProvider.currentPlayer,
+    );
   }
 
-  // دالة للتحقق من صحة البيانات
-  bool validateGameState() {
-    if (_currentRoom == null) {
-      debugPrint('خطأ: لا توجد غرفة حالية');
-      return false;
-    }
-
-    if (_currentPlayer == null) {
-      debugPrint('خطأ: لا يوجد لاعب حالي');
-      return false;
-    }
-
-    if (!_currentRoom!.players.any((p) => p.id == _currentPlayer!.id)) {
-      debugPrint('خطأ: اللاعب الحالي غير موجود في قائمة اللاعبين');
-      return false;
-    }
-
-    return true;
+  void startGame() {
+    _gameStateProvider.startGame(
+      _gameRoomProvider.currentRoom,
+      _gamePlayerProvider.currentPlayer,
+      _gameWords,
+    );
+    notifyListeners();
   }
 
-  // إضافة هذه الدالة في GameProvider
-  void updatePlayerConnectionStatus(String playerId, bool isConnected) {
-    if (_currentRoom == null) return;
-
-    bool updated = false;
-    for (int i = 0; i < _currentRoom!.players.length; i++) {
-      if (_currentRoom!.players[i].id == playerId) {
-        _currentRoom!.players[i] = _currentRoom!.players[i].copyWith(
-            isConnected: isConnected
-        );
-        updated = true;
-        break;
-      }
-    }
-
-    if (updated) {
-      // تحديث اللاعب الحالي إذا كان هو المتأثر
-      if (_currentPlayer?.id == playerId) {
-        _currentPlayer = _currentRoom!.players.firstWhere(
-                (p) => p.id == playerId,
-            orElse: () => _currentPlayer!
-        );
-      }
-
-      debugPrint('تم تحديث حالة الاتصال للاعب $playerId: $isConnected');
+  bool startGameManually() {
+    final result = _gameStateProvider.startGameManually(
+      _gameRoomProvider.currentRoom,
+      _gamePlayerProvider.currentPlayer,
+    );
+    if (result) {
       notifyListeners();
-
-      // إشعار إضافي للتأكد من التحديث
-      Future.delayed(const Duration(milliseconds: 100), () {
-        notifyListeners();
-      });
     }
+    return result;
   }
 
-  void setExperienceService(ExperienceService service) {
-    _experienceService = service;
+  Future<bool> startGameWithServer() async {
+    final result = await _gameStateProvider.startGameWithServer(
+      _gameRoomProvider.currentRoom,
+      _gamePlayerProvider.currentPlayer,
+      _supabaseService,
+    );
+    if (result) {
+      notifyListeners();
+    }
+    return result;
   }
 
-// تحديث دالة loadPlayerStats في GameProvider
+  // وظائف التصويت
+  void votePlayer(String voterId, String targetId) {
+    _gameStateProvider.votePlayer(
+      _gameRoomProvider.currentRoom,
+      voterId,
+      targetId,
+    );
+    notifyListeners();
+  }
+
+  Future<bool> votePlayerWithServer(String targetId) async {
+    final result = await _gameStateProvider.votePlayerWithServer(
+      _gameRoomProvider.currentRoom,
+      _gamePlayerProvider.currentPlayer,
+      targetId,
+      _supabaseService,
+    );
+    if (result) {
+      notifyListeners();
+    }
+    return result;
+  }
+
+  Future<bool> voteToContinueWithServer(bool continuePlaying) async {
+    final result = await _gameStateProvider.voteToContinueWithServer(
+      _gameRoomProvider.currentRoom,
+      _gamePlayerProvider.currentPlayer,
+      continuePlaying,
+      _supabaseService,
+    );
+    if (result) {
+      notifyListeners();
+    }
+    return result;
+  }
+
+  // وظائف الوقت والجولات
+  void checkRoundTimeout() {
+    _gameStateProvider.checkRoundTimeout(_gameRoomProvider.currentRoom);
+    notifyListeners();
+  }
+
+  // وظائف المكافآت والإحصائيات
   Future<void> loadPlayerStats(String playerId) async {
-    if (_experienceService == null) return;
-
-    try {
-      // تمرير اسم اللاعب الحالي إذا كان متاحاً
-      final playerName = _currentPlayer?.name ?? 'لاعب مجهول';
-      _currentPlayerStats = await _experienceService!.getPlayerStats(playerId, playerName: playerName);
-      notifyListeners();
-    } catch (e) {
-      debugPrint('خطأ في تحميل إحصائيات اللاعب: $e');
-    }
-  }
-
-  /// تنظيف المكافآت بعد عرضها
-  void clearLastGameRewards() {
-    _lastGameRewards = null;
+    await _gameRewardsProvider.loadPlayerStats(
+      playerId,
+      _gamePlayerProvider.currentPlayer?.name ?? 'لاعب مجهول',
+      _experienceService,
+    );
     notifyListeners();
   }
 
-// إضافة دالة جديدة للتحديث المباشر:
+  Future<void> processGameEndWithRewards() async {
+    await _gameRewardsProvider.processGameEndWithRewards(
+      _gameRoomProvider.currentRoom,
+      _experienceService,
+    );
+    notifyListeners();
+  }
+
+  void clearLastGameRewards() {
+    _gameRewardsProvider.clearLastGameRewards();
+    notifyListeners();
+  }
+
+  void checkAndProcessGameRewards() {
+    _gameRewardsProvider.checkAndProcessGameRewards(
+      _gameRoomProvider.currentRoom,
+    );
+    notifyListeners();
+  }
+
+  // وظائف التحقق والتحقق من الصحة
+  bool validateGameState() {
+    return _gameStateProvider.validateGameState(
+      _gameRoomProvider.currentRoom,
+      _gamePlayerProvider.currentPlayer,
+    );
+  }
+
+  bool validateAndFixGameState() {
+    final result = _gameRoomProvider.validateAndFixGameState(
+      _gamePlayerProvider.currentPlayer,
+    );
+    if (result) {
+      notifyListeners();
+    }
+    return result;
+  }
+
+  bool hasStateChanged() {
+    return _gameStateProvider.hasStateChanged();
+  }
+
+  bool hasPlayersCountChanged() {
+    return _gameRoomProvider.hasPlayersCountChanged();
+  }
+
+  // وظائف الإشعارات والتحديثات
+  void forceUpdate() {
+    notifyListeners();
+  }
+
   void notifyRoomUpdate() {
     notifyListeners();
-    debugPrint('تم إشعار المستمعين بتحديث الغرفة');
   }
 
   // تنظيف الموارد
   @override
   void dispose() {
-    _currentRoom = null;
-    _currentPlayer = null;
-    _availableRooms.clear();
+    _gameRoomProvider.dispose();
+    _gamePlayerProvider.dispose();
+    _gameStateProvider.dispose();
+    _gameSoundProvider.dispose();
+    _gameRewardsProvider.dispose();
     super.dispose();
   }
 }

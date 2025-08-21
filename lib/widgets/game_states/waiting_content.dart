@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'dart:async';
-
 import '../../../providers/game_provider.dart';
 import '../../../services/supabase_service.dart';
 import '../../models/game_room_model.dart';
 import '../../models/player_model.dart';
+import '../../providers/game_state.dart';
 
 class WaitingContent extends StatefulWidget {
   final GameRoom room;
-
   const WaitingContent({super.key, required this.room});
 
   @override
@@ -21,10 +20,18 @@ class _WaitingContentState extends State<WaitingContent> {
   StreamSubscription<List<Map<String, dynamic>>>? _playersSubscription;
   final SupabaseService _supabaseService = SupabaseService();
 
+  // متغيرات محلية لتتبع الحالة
+  bool _canStartGame = false;
+  int _connectedPlayersCount = 0;
+  bool _isCreator = false;
+  bool _hasEnoughPlayers = false;
+
   @override
   void initState() {
     super.initState();
     _startListeningToUpdates();
+    // تحديث الحالة الأولية
+    _updateLocalState();
   }
 
   @override
@@ -32,6 +39,38 @@ class _WaitingContentState extends State<WaitingContent> {
     _roomSubscription?.cancel();
     _playersSubscription?.cancel();
     super.dispose();
+  }
+
+  // دالة لتحديث الحالة المحلية
+  void _updateLocalState() {
+    if (!mounted) return;
+
+    final gameProvider = Provider.of<GameProvider>(context, listen: false);
+    final room = gameProvider.currentRoom ?? widget.room;
+
+    // حساب عدد اللاعبين المتصلين يدوياً
+    final connectedCount = room.players.where((p) => p.isConnected).length;
+    final isCreator = gameProvider.isCurrentPlayerCreator;
+    final hasEnoughPlayers = connectedCount >= gameProvider.minimumPlayersRequired;
+    final canStart = isCreator && hasEnoughPlayers && room.state == GameState.waiting;
+
+    // تحديث المتغيرات المحلية فقط إذا تغيرت القيم
+    if (_connectedPlayersCount != connectedCount ||
+        _isCreator != isCreator ||
+        _hasEnoughPlayers != hasEnoughPlayers ||
+        _canStartGame != canStart) {
+
+      // تحديث المتغيرات المحلية
+      setState(() {
+        _connectedPlayersCount = connectedCount;
+        _isCreator = isCreator;
+        _hasEnoughPlayers = hasEnoughPlayers;
+        _canStartGame = canStart;
+      });
+
+      // طباعة معلومات التصحيح
+      debugPrint('تحديث الحالة: connectedCount=$connectedCount, isCreator=$isCreator, hasEnoughPlayers=$hasEnoughPlayers, canStart=$canStart');
+    }
   }
 
   void _startListeningToUpdates() {
@@ -71,10 +110,13 @@ class _WaitingContentState extends State<WaitingContent> {
             gameProvider.currentPlayer?.id ?? ''
         );
 
-        // فرض تحديث إضافي للواجهة
-        if (mounted) {
-          setState(() {});
-        }
+        // تحديث الحالة المحلية بعد تحديث الغرفة
+        // استخدام WidgetsBinding لإضافة تحديث الحالة في الإطار التالي
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            _updateLocalState();
+          }
+        });
       }
     } catch (e) {
       debugPrint('خطأ في معالجة تحديث الغرفة: $e');
@@ -101,15 +143,19 @@ class _WaitingContentState extends State<WaitingContent> {
       // إنشاء غرفة محدثة مع اللاعبين الجدد
       final updatedRoom = currentRoom.copyWith(players: updatedPlayers);
 
+      // تحديث GameProvider مع البيانات الجديدة
       gameProvider.updateRoomFromRealtime(
           updatedRoom,
           gameProvider.currentPlayer?.id ?? ''
       );
 
-      // فرض تحديث الواجهة
-      if (mounted) {
-        setState(() {});
-      }
+      // تحديث الحالة المحلية بعد تحديث اللاعبين
+      // استخدام WidgetsBinding لإضافة تحديث الحالة في الإطار التالي
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _updateLocalState();
+        }
+      });
     } catch (e) {
       debugPrint('خطأ في معالجة تحديث اللاعبين: $e');
     }
@@ -152,123 +198,119 @@ class _WaitingContentState extends State<WaitingContent> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<GameProvider>(
-      builder: (context, gameProvider, child) {
-        final room = gameProvider.currentRoom ?? widget.room;
-        final canStart = gameProvider.canStartGame();
-        final isCreator = gameProvider.isCurrentPlayerCreator;
-        final hasEnoughPlayers = gameProvider.hasEnoughPlayers;
-        final connectedCount = gameProvider.connectedPlayersCount;
+    // استخدام ValueListenableBuilder بدلاً من Consumer لتجنب المشاكل
+    return ValueListenableBuilder<bool>(
+      valueListenable: ValueNotifier<bool>(_canStartGame),
+      builder: (context, canStart, child) {
+        return Consumer<GameProvider>(
+          builder: (context, gameProvider, child) {
+            final room = gameProvider.currentRoom ?? widget.room;
 
-        return Center(
-          child: Container(
-            margin: const EdgeInsets.all(20),
-            padding: const EdgeInsets.all(30),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
-                  blurRadius: 10,
-                  offset: const Offset(0, 5),
-                ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.hourglass_empty,
-                  size: 60,
-                  color: Colors.blue,
-                ),
-                const SizedBox(height: 20),
-                const Text(
-                  'في انتظار اللاعبين',
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: Text(
-                    '$connectedCount/${room.maxPlayers} لاعبين',
-                    key: ValueKey('$connectedCount-${room.maxPlayers}'),
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: hasEnoughPlayers ? Colors.green : Colors.orange,
-                      fontWeight: FontWeight.bold,
+            // لا نستدعي _updateLocalState() هنا، بل نستخدم القيم المحلية
+
+            return Center(
+              child: Container(
+                margin: const EdgeInsets.all(20),
+                padding: const EdgeInsets.all(30),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.1),
+                      blurRadius: 10,
+                      offset: const Offset(0, 5),
                     ),
-                  ),
+                  ],
                 ),
-
-                // مؤشر الحالة مع انيميشن
-                const SizedBox(height: 15),
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 400),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: hasEnoughPlayers
-                        ? Colors.green.withOpacity(0.1)
-                        : Colors.orange.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 300),
-                    child: Text(
-                      hasEnoughPlayers
-                          ? '✓ العدد كافي لبدء اللعبة'
-                          : 'نحتاج ${gameProvider.minimumPlayersRequired - connectedCount} لاعبين إضافيين على الأقل',
-                      key: ValueKey(hasEnoughPlayers),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.hourglass_empty,
+                      size: 60,
+                      color: Colors.blue,
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'في انتظار اللاعبين',
                       style: TextStyle(
-                        color: hasEnoughPlayers ? Colors.green : Colors.orange,
-                        fontSize: 12,
+                        fontSize: 24,
                         fontWeight: FontWeight.bold,
                       ),
-                      textAlign: TextAlign.center,
                     ),
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-
-                // قائمة اللاعبين مع انيميشن
-                AnimatedList(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  initialItemCount: room.players.length,
-                  itemBuilder: (context, index, animation) {
-                    if (index >= room.players.length) return const SizedBox();
-                    return SlideTransition(
-                      position: animation.drive(
-                        Tween(begin: const Offset(1, 0), end: Offset.zero)
-                            .chain(CurveTween(curve: Curves.easeOut)),
+                    const SizedBox(height: 10),
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 300),
+                      child: Text(
+                        '$_connectedPlayersCount/${room.maxPlayers} لاعبين',
+                        key: ValueKey('$_connectedPlayersCount-${room.maxPlayers}'),
+                        style: TextStyle(
+                          fontSize: 18,
+                          color: _hasEnoughPlayers ? Colors.green : Colors.orange,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                      child: _buildPlayerCard(
-                          room.players[index],
-                          gameProvider.currentPlayer?.id ?? ''
+                    ),
+                    // مؤشر الحالة مع انيميشن
+                    const SizedBox(height: 15),
+                    AnimatedContainer(
+                      duration: const Duration(milliseconds: 400),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: _hasEnoughPlayers
+                            ? Colors.green.withOpacity(0.1)
+                            : Colors.orange.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(20),
                       ),
-                    );
-                  },
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: Text(
+                          _hasEnoughPlayers
+                              ? '✓ العدد كافي لبدء اللعبة'
+                              : 'نحتاج {3 - _connectedPlayersCount} لاعبين إضافيين على الأقل',
+                          key: ValueKey(_hasEnoughPlayers),
+                          style: TextStyle(
+                            color: _hasEnoughPlayers ? Colors.green : Colors.orange,
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    // قائمة اللاعبين مع انيميشن
+                    SizedBox(
+                      height: 200, // تحديد ارتفاع ثابت لقائمة اللاعبين
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        itemCount: room.players.length,
+                        itemBuilder: (context, index) {
+                          if (index >= room.players.length) return const SizedBox();
+                          return _buildPlayerCard(
+                              room.players[index],
+                              gameProvider.currentPlayer?.id ?? ''
+                          );
+                        },
+                      ),
+                    ),
+                    // زر بدء اللعبة أو رسالة الانتظار
+                    if (_isCreator)
+                      _buildStartGameButton(context, gameProvider, _canStartGame, _connectedPlayersCount)
+                    else
+                      _buildWaitingMessage(_hasEnoughPlayers),
+                  ],
                 ),
-
-                // زر بدء اللعبة أو رسالة الانتظار
-                if (isCreator)
-                  _buildStartGameButton(context, gameProvider, canStart, connectedCount)
-                else
-                  _buildWaitingMessage(hasEnoughPlayers),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         );
       },
     );
   }
 
-  // باقي الدوال تبقى كما هي...
   Widget _buildPlayerCard(Player player, String currentPlayerId) {
     return AnimatedContainer(
       duration: const Duration(milliseconds: 300),
@@ -368,9 +410,7 @@ class _WaitingContentState extends State<WaitingContent> {
     );
   }
 
-  // باقي دوال البناء تبقى كما هي...
   Widget _buildStartGameButton(BuildContext context, GameProvider gameProvider, bool canStart, int connectedCount) {
-    // نفس الكود الموجود
     return Column(
       children: [
         const SizedBox(height: 25),
@@ -403,7 +443,6 @@ class _WaitingContentState extends State<WaitingContent> {
   }
 
   Widget _buildWaitingMessage(bool hasEnoughPlayers) {
-    // نفس الكود الموجود
     return Column(
       children: [
         const SizedBox(height: 25),
@@ -450,7 +489,6 @@ class _WaitingContentState extends State<WaitingContent> {
   }
 
   Future<void> _showStartGameConfirmation(BuildContext context, GameProvider gameProvider, int connectedCount) async {
-    // نفس الكود الموجود
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -489,14 +527,14 @@ class _WaitingContentState extends State<WaitingContent> {
         ],
       ),
     );
-
     if (confirmed == true) {
       _startGameWithLoadingDialog(context, gameProvider);
     }
   }
 
+// في دالة _startGameWithLoadingDialog في ملف waiting_content.dart
+
   Future<void> _startGameWithLoadingDialog(BuildContext context, GameProvider gameProvider) async {
-    // نفس الكود الموجود
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -513,6 +551,8 @@ class _WaitingContentState extends State<WaitingContent> {
     );
 
     final success = await gameProvider.startGameWithServer();
+
+    // إغلاق مربع الحوار دائماً
     Navigator.pop(context);
 
     if (!success) {
@@ -520,6 +560,14 @@ class _WaitingContentState extends State<WaitingContent> {
         const SnackBar(
           content: Text('فشل في بدء اللعبة، يرجى المحاولة مرة أخرى'),
           backgroundColor: Colors.red,
+        ),
+      );
+    } else {
+      // إضافة إشعار بنجاح بدء اللعبة
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('تم بدء اللعبة بنجاح'),
+          backgroundColor: Colors.green,
         ),
       );
     }

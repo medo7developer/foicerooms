@@ -1,4 +1,5 @@
 import '../providers/game_provider.dart';
+import '../providers/game_state.dart';
 
 class Player {
   final String id;

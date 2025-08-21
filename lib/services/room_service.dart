@@ -3,6 +3,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/game_room_model.dart';
 import '../models/player_model.dart';
 import '../providers/game_provider.dart';
+import '../providers/game_state.dart';
 
 /// خدمة إدارة الغرف - إنشاء، جلب، حذف الغرف
 class RoomService {
