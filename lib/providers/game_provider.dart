@@ -25,6 +25,8 @@ class GameProvider extends ChangeNotifier {
   // Getters جديدة
   PlayerStats? get currentPlayerStats => _currentPlayerStats;
   List<GameReward>? get lastGameRewards => _lastGameRewards;
+// إضافة متغير للتحقق من معالجة المكافآت
+  bool _rewardsProcessed = false;
 
   set currentRoom(GameRoom? room) {
     _currentRoom = room;
@@ -439,19 +441,17 @@ class GameProvider extends ChangeNotifier {
     }
   }
 
-// تحسين دالة updateRoomFromRealtime
+// تعديل updateRoomFromRealtime
   void updateRoomFromRealtime(GameRoom updatedRoom, String playerId) {
     if (_currentRoom == null) return;
 
-    // حفظ الحالة السابقة للمقارنة
     final oldState = _currentRoom!.state;
-    final oldPlayersCount = _currentRoom!.players.length;
-    final oldConnectedCount = connectedPlayersCount;
+    final oldWinner = _currentRoom!.winner;
 
     // تحديث بيانات الغرفة
     _currentRoom = updatedRoom;
 
-    // العثور على اللاعب الحالي في البيانات المحدثة
+    // العثور على اللاعب الحالي
     Player? updatedPlayer;
     for (final player in updatedRoom.players) {
       if (player.id == playerId) {
@@ -474,15 +474,23 @@ class GameProvider extends ChangeNotifier {
       _currentPlayer = updatedPlayer;
     }
 
-    // تسجيل التغييرات المهمة
-    final newConnectedCount = connectedPlayersCount;
-    if (oldConnectedCount != newConnectedCount) {
-      log('👥 تغير عدد اللاعبين المتصلين من $oldConnectedCount إلى $newConnectedCount');
+    // فحص انتهاء اللعبة ومعالجة المكافآت
+    if (oldState != GameState.finished &&
+        updatedRoom.state == GameState.finished &&
+        !_rewardsProcessed) {
+
+      log('🏁 تم انتهاء اللعبة - الفائز: ${updatedRoom.winner}');
+      _rewardsProcessed = true;
+
+      // تأخير قصير للتأكد من استقرار البيانات
+      Future.delayed(const Duration(seconds: 2), () {
+        processGameEndWithRewards();
+      });
     }
 
-    if (oldState != updatedRoom.state) {
-      log('🔄 تغيرت حالة الغرفة من $oldState إلى ${updatedRoom.state}');
-      _handleStateTransition(oldState, updatedRoom.state);
+    // إعادة تعيين معالجة المكافآت للألعاب الجديدة
+    if (updatedRoom.state == GameState.waiting) {
+      _rewardsProcessed = false;
     }
 
     // تحديث متغيرات التتبع
@@ -491,20 +499,56 @@ class GameProvider extends ChangeNotifier {
 
     // إشعارات متعددة للتأكد من التحديث
     notifyListeners();
-
-    // إشعار إضافي بعد تأخير قصير
     Future.delayed(const Duration(milliseconds: 50), () {
-      if (_currentRoom != null) {
-        notifyListeners();
-      }
+      if (_currentRoom != null) notifyListeners();
     });
-
-    // إشعار نهائي للتأكد
     Future.delayed(const Duration(milliseconds: 200), () {
-      if (_currentRoom != null) {
-        notifyListeners();
-      }
+      if (_currentRoom != null) notifyListeners();
     });
+  }
+
+// تحديث processGameEndWithRewards لتكون أكثر أماناً
+  Future<void> processGameEndWithRewards() async {
+    if (_currentRoom == null || _experienceService == null) {
+      log('⚠️ لا يمكن معالجة المكافآت - بيانات مفقودة');
+      return;
+    }
+
+    if (_currentRoom!.state != GameState.finished) {
+      log('⚠️ اللعبة لم تنته بعد، لا يمكن معالجة المكافآت');
+      return;
+    }
+
+    try {
+      log('🎁 بدء معالجة مكافآت اللعبة...');
+
+      // تحديد الفائز من بيانات الغرفة
+      String winner = _currentRoom!.winner ?? 'normal_players';
+
+      log('📊 الفائز: $winner، الجاسوس المكشوف: ${_currentRoom!.revealedSpyId}');
+
+      // معالجة مكافآت جميع اللاعبين
+      final allRewards = await _experienceService!.processRoomGameResult(
+        room: _currentRoom!,
+        winner: winner,
+        revealedSpyId: _currentRoom!.revealedSpyId,
+      );
+
+      log('✅ تم معالجة مكافآت ${allRewards.length} لاعبين');
+
+      // احفظ مكافآت اللاعب الحالي
+      if (_currentPlayer != null && allRewards.containsKey(_currentPlayer!.id)) {
+        _lastGameRewards = allRewards[_currentPlayer!.id];
+        log('🎁 تم حفظ مكافآت اللاعب الحالي: ${_lastGameRewards?.length} مكافأة');
+
+        // إعادة تحميل الإحصائيات المحدثة
+        await loadPlayerStats(_currentPlayer!.id);
+      }
+
+      notifyListeners();
+    } catch (e) {
+      log('❌ خطأ في معالجة مكافآت اللعبة: $e');
+    }
   }
 
 // أضف هذه الدالة الجديدة لمعالجة انتقالات الحالة:
@@ -958,6 +1002,17 @@ class GameProvider extends ChangeNotifier {
     debugPrint('تم إعادة تعيين جميع بيانات اللعبة');
   }
 
+  // إضافة هذه الدالة في GameProvider
+  void checkAndProcessGameRewards() {
+    if (_currentRoom?.state == GameState.finished &&
+        _currentRoom?.winner != null &&
+        _lastGameRewards == null) {
+
+      log('🎁 معالجة مكافآت نهاية اللعبة');
+      processGameEndWithRewards();
+    }
+  }
+
   // دالة للتحقق من صحة البيانات
   bool validateGameState() {
     if (_currentRoom == null) {
@@ -1027,38 +1082,6 @@ class GameProvider extends ChangeNotifier {
       notifyListeners();
     } catch (e) {
       debugPrint('خطأ في تحميل إحصائيات اللاعب: $e');
-    }
-  }
-
-  Future<void> processGameEndWithRewards() async {
-    if (_currentRoom == null || _experienceService == null) return;
-
-    try {
-      // تحديد الفائز من بيانات الغرفة
-      String winner = 'normal_players';
-      if (_currentRoom!.winner == 'spy') {
-        winner = 'spy';
-      }
-
-      // معالجة مكافآت جميع اللاعبين مع تمرير الأسماء
-      final allRewards = await _experienceService!.processRoomGameResult(
-        room: _currentRoom!,
-        winner: winner,
-        revealedSpyId: _currentRoom!.revealedSpyId,
-      );
-
-      // احفظ مكافآت اللاعب الحالي
-      if (_currentPlayer != null && allRewards.containsKey(_currentPlayer!.id)) {
-        _lastGameRewards = allRewards[_currentPlayer!.id];
-
-        // إعادة تحميل الإحصائيات المحدثة
-        await loadPlayerStats(_currentPlayer!.id);
-      }
-
-      debugPrint('تم معالجة مكافآت اللعبة لـ ${allRewards.length} لاعبين');
-      notifyListeners();
-    } catch (e) {
-      debugPrint('خطأ في معالجة مكافآت اللعبة: $e');
     }
   }
 

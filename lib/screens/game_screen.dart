@@ -6,6 +6,7 @@ import 'dart:async';
 import '../models/game_room_model.dart';
 import '../models/player_model.dart';
 import '../providers/game_provider.dart';
+import '../services/experience_service.dart';
 import '../services/realtime_manager.dart';
 import '../services/webrtc_services/webrtc_service.dart';
 import '../services/supabase_service.dart';
@@ -69,6 +70,7 @@ class _GameScreenState extends State<GameScreen>
     );
   }
 
+// في _initializeGame() في GameScreen
   Future<void> _initializeGame() async {
     if (!mounted) return;
 
@@ -88,9 +90,14 @@ class _GameScreenState extends State<GameScreen>
 
       if (!mounted) return;
 
-      // 3. إعداد الخدمات
+      // 3. إعداد الخدمات - تصحيح هنا
       final gameProvider = context.read<GameProvider>();
       gameProvider.setSupabaseService(_supabaseService);
+
+      // إضافة تهيئة ExperienceService
+      final experienceService = ExperienceService();
+      gameProvider.setExperienceService(experienceService);
+
       _realtimeManager.registerGameProvider(gameProvider);
 
       // 4. إعداد WebRTC callbacks مع الدوال المحسنة

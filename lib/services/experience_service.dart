@@ -62,11 +62,28 @@ class ExperienceService {
     }
   }
 
-  /// إنشاء إحصائيات جديدة للاعب
+// تعديل دالة _createNewPlayerStats
   Future<PlayerStats> _createNewPlayerStats(String playerId, String playerName) async {
     try {
       // التأكد من وجود اللاعب في جدول players أولاً
       await _ensurePlayerExists(playerId, playerName);
+
+      // فحص مرة أخرى قبل الإنشاء
+      final existingStats = await _client
+          .from('player_stats')
+          .select('player_id')
+          .eq('player_id', playerId)
+          .maybeSingle();
+
+      if (existingStats != null) {
+        // الإحصائيات موجودة، فقط نحديث الاسم
+        await _client
+            .from('player_stats')
+            .update({'player_name': playerName})
+            .eq('player_id', playerId);
+
+        return (await getPlayerStats(playerId))!;
+      }
 
       final newStats = PlayerStats(
         playerId: playerId,
@@ -74,17 +91,15 @@ class ExperienceService {
         lastUpdated: DateTime.now(),
       );
 
-      // محاولة إنشاء الإحصائيات
       final statsData = newStats.toJson();
-
       await _client.from('player_stats').insert(statsData);
+
       log('تم إنشاء إحصائيات جديدة للاعب: $playerId');
       return newStats;
 
     } catch (e) {
       log('خطأ في إنشاء إحصائيات اللاعب: $e');
-
-      // إذا فشل الإنشاء، إرجاع إحصائيات افتراضية
+      // إرجاع إحصائيات افتراضية بدلاً من إعادة المحاولة
       return PlayerStats(
         playerId: playerId,
         playerName: playerName,
@@ -351,27 +366,31 @@ class ExperienceService {
     }
   }
 
-  /// إنشاء إحصائيات فور دخول المستخدم للتطبيق
+// تحديث initializePlayerStatsOnStart
   Future<void> initializePlayerStatsOnStart(String playerId, String playerName) async {
     try {
-      // التحقق من وجود الإحصائيات
+      // فحص الإحصائيات الموجودة أولاً
       final existingStats = await _client
           .from('player_stats')
-          .select('player_id')
+          .select('player_id, player_name')
           .eq('player_id', playerId)
           .maybeSingle();
 
       if (existingStats == null) {
-        // إنشاء إحصائيات جديدة
+        // إنشاء إحصائيات جديدة فقط إذا لم تكن موجودة
         await _createNewPlayerStats(playerId, playerName);
         log('تم إنشاء إحصائيات جديدة للاعب عند بدء التطبيق: $playerId');
       } else {
-        // تحديث الاسم فقط إذا كانت الإحصائيات موجودة
-        await _client
-            .from('player_stats')
-            .update({'player_name': playerName})
-            .eq('player_id', playerId);
-        log('تم تحديث اسم اللاعب الموجود: $playerId');
+        // تحديث الاسم فقط إذا تغير
+        if (existingStats['player_name'] != playerName) {
+          await _client
+              .from('player_stats')
+              .update({'player_name': playerName})
+              .eq('player_id', playerId);
+          log('تم تحديث اسم اللاعب الموجود: $playerId -> $playerName');
+        } else {
+          log('إحصائيات اللاعب موجودة ومحدثة: $playerId');
+        }
       }
     } catch (e) {
       log('خطأ في تهيئة إحصائيات اللاعب عند البدء: $e');

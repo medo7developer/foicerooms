@@ -229,12 +229,14 @@ class GameLogicService {
   }
 
   /// إنهاء اللعبة مع عرض الجاسوس الحقيقي (دالة جديدة)
+// تحديث دالة endGameAndRevealSpy
   Future<void> endGameAndRevealSpy(String roomId, String winner, String? spyId) async {
     try {
       await _client.from('rooms').update({
         'state': 'finished',
         'winner': winner,
-        'revealed_spy_id': spyId, // حقل جديد لعرض الجاسوس
+        'revealed_spy_id': spyId,
+        'game_ended_at': DateTime.now().toIso8601String(), // إضافة وقت انتهاء اللعبة
         'updated_at': DateTime.now().toIso8601String(),
       }).eq('id', roomId);
 

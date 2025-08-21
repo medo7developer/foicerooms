@@ -83,12 +83,27 @@ class RoomService {
     }
   }
 
-  /// دالة لتنظيف بيانات اللاعب القديمة
+// استبدال _cleanupPlayerData بهذه النسخة الآمنة
   Future<void> _cleanupPlayerData(String playerId) async {
     try {
-      // حذف اللاعب من أي غرفة قديمة منتهية أو معطلة
-      await _client.from('players').delete().eq('id', playerId);
-      log('تم تنظيف بيانات اللاعب القديمة: $playerId');
+      // حذف اللاعب فقط من الغرف المنتهية، وليس حذف المستخدم كلياً
+      final existingPlayer = await _client
+          .from('players')
+          .select('room_id, rooms!inner(state)')
+          .eq('id', playerId)
+          .maybeSingle();
+
+      if (existingPlayer != null) {
+        final roomState = existingPlayer['rooms']['state'];
+
+        // حذف فقط من الغرف المنتهية أو الملغاة
+        if (roomState == 'finished' || roomState == 'cancelled') {
+          await _client.from('players').delete().eq('id', playerId);
+          log('تم حذف اللاعب من غرفة منتهية: $playerId');
+        } else {
+          log('اللاعب في غرفة نشطة، لن يتم حذفه');
+        }
+      }
     } catch (e) {
       log('تحذير: لم يتم العثور على بيانات قديمة للاعب $playerId');
     }

@@ -421,16 +421,28 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
 // إضافة هذه الدالة الجديدة:
+// تعديل _initializePlayerStats
   Future<void> _initializePlayerStats() async {
     if (_playerId == null || _nameController.text.trim().isEmpty) return;
 
     try {
       final experienceService = ExperienceService();
-      await experienceService.initializePlayerStatsOnStart(
-        _playerId!,
-        _nameController.text.trim(),
-      );
-      log('تم تهيئة إحصائيات اللاعب بنجاح');
+
+      // فحص الإحصائيات الموجودة أولاً
+      final existingStats = await experienceService.getPlayerStats(_playerId!);
+
+      if (existingStats == null) {
+        // إنشاء إحصائيات جديدة فقط إذا لم تكن موجودة
+        await experienceService.initializePlayerStatsOnStart(
+          _playerId!,
+          _nameController.text.trim(),
+        );
+        log('تم إنشاء إحصائيات جديدة للاعب');
+      } else {
+        // تحديث الاسم فقط
+        await experienceService.updatePlayerName(_playerId!, _nameController.text.trim());
+        log('تم تحديث اسم اللاعب في الإحصائيات الموجودة');
+      }
     } catch (e) {
       log('خطأ في تهيئة إحصائيات اللاعب: $e');
     }
@@ -682,7 +694,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
     );
   }
-  
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
