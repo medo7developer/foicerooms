@@ -1,4 +1,5 @@
 import 'dart:developer';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:provider/provider.dart';
@@ -10,7 +11,9 @@ import '../../services/webrtc_services/webrtc_service.dart';
 import '../../services/supabase_service.dart';
 
 mixin GameScreenMixin {
-  final Set<int> _processedSignals = {};
+  final Set<String> _processedSignals = {};
+  StreamSubscription<Map<String, dynamic>>? _signalSubscription;
+  Timer? _signalCleanupTimer;
 
   void setupWebRTCCallbacks(
       WebRTCService webrtcService,
@@ -18,12 +21,17 @@ mixin GameScreenMixin {
       String playerId,
       BuildContext gameContext,
       ) {
+
+    // إلغاء الاستماع السابق إذا كان موجوداً
+    _signalSubscription?.cancel();
+
     webrtcService.setSignalingCallbacks(
       onIceCandidate: (peerId, candidate) async {
         try {
           final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
-            // استخدام الدالة المحسنة التي ترجع bool
+            log('🧊 إرسال ICE candidate إلى $peerId');
+
             final success = await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
               fromPeer: playerId,
@@ -36,9 +44,12 @@ mixin GameScreenMixin {
               },
             );
 
-            if (!success) {
-              log('⚠️ فشل إرسال ICE candidate - إعادة المحاولة بعد ثانية');
-              Future.delayed(const Duration(seconds: 1), () async {
+            if (success) {
+              log('✅ تم إرسال ICE candidate بنجاح إلى $peerId');
+            } else {
+              log('❌ فشل إرسال ICE candidate إلى $peerId');
+              // إعادة المحاولة بعد تأخير قصير
+              Future.delayed(const Duration(milliseconds: 500), () async {
                 await supabaseService.sendSignal(
                   roomId: gameProvider.currentRoom!.id,
                   fromPeer: playerId,
@@ -54,14 +65,17 @@ mixin GameScreenMixin {
             }
           }
         } catch (e) {
-          log('✗ خطأ في إرسال ICE candidate: $e');
+          log('❌ خطأ في إرسال ICE candidate: $e');
         }
       },
+
       onOffer: (peerId, offer) async {
         try {
           final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
-            await supabaseService.sendSignal(
+            log('📤 إرسال offer إلى $peerId');
+
+            final success = await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
               fromPeer: playerId,
               toPeer: peerId,
@@ -71,16 +85,25 @@ mixin GameScreenMixin {
                 'type': offer.type,
               },
             );
+
+            if (success) {
+              log('✅ تم إرسال offer بنجاح إلى $peerId');
+            } else {
+              log('❌ فشل إرسال offer إلى $peerId');
+            }
           }
         } catch (e) {
-          log('✗ خطأ في إرسال العرض: $e');
+          log('❌ خطأ في إرسال العرض: $e');
         }
       },
+
       onAnswer: (peerId, answer) async {
         try {
           final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
-            await supabaseService.sendSignal(
+            log('📤 إرسال answer إلى $peerId');
+
+            final success = await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
               fromPeer: playerId,
               toPeer: peerId,
@@ -90,26 +113,60 @@ mixin GameScreenMixin {
                 'type': answer.type,
               },
             );
+
+            if (success) {
+              log('✅ تم إرسال answer بنجاح إلى $peerId');
+            } else {
+              log('❌ فشل إرسال answer إلى $peerId');
+            }
           }
         } catch (e) {
-          log('✗ خطأ في إرسال الإجابة: $e');
+          log('❌ خطأ في إرسال الإجابة: $e');
         }
       },
     );
 
-    // استخدام الدالة المحسنة للاستماع
-    supabaseService.listenToSignalsWithFallback(playerId).listen(
-          (signal) {
-        if (signal.isNotEmpty && signal['type'] != null) {
-          final signalId = signal['id'];
+    // بدء الاستماع المحسن للإشارات
+    _startEnhancedSignalListening(webrtcService, supabaseService, playerId, gameContext);
 
-          // معالجة الإشارة بغض النظر عن نوع المعرف
-          if (signalId != null && !_processedSignals.contains(signalId)) {
+    // بدء مؤقت التنظيف
+    _startSignalCleanupTimer();
+  }
+
+  void _startEnhancedSignalListening(
+      WebRTCService webrtcService,
+      SupabaseService supabaseService,
+      String playerId,
+      BuildContext gameContext,
+      ) {
+
+    log('🎧 بدء الاستماع المحسن للإشارات للاعب: $playerId');
+
+    _signalSubscription = supabaseService.listenToSignalsWithFallback(playerId)
+        .timeout(const Duration(seconds: 10))
+        .listen(
+          (signal) async {
+        if (signal.isNotEmpty && signal['type'] != null && signal['from_peer'] != null) {
+          final signalId = '${signal['from_peer']}_${signal['type']}_${DateTime.now().millisecondsSinceEpoch}';
+
+          // تجنب معالجة الإشارات المكررة
+          if (!_processedSignals.contains(signalId)) {
             _processedSignals.add(signalId);
-            handleIncomingSignalEnhanced(signal, webrtcService, supabaseService, playerId);
 
-            if (_processedSignals.length > 100) {
+            log('📨 استلام إشارة جديدة: ${signal['type']} من ${signal['from_peer']}');
+
+            await _handleIncomingSignalRobust(
+              signal,
+              webrtcService,
+              supabaseService,
+              playerId,
+              gameContext,
+            );
+
+            // تنظيف قائمة الإشارات المعالجة إذا أصبحت كبيرة
+            if (_processedSignals.length > 50) {
               _processedSignals.clear();
+              log('🧹 تم تنظيف قائمة الإشارات المعالجة');
             }
           }
         }
@@ -118,179 +175,189 @@ mixin GameScreenMixin {
         log('❌ خطأ في الاستماع للإشارات: $error');
         // إعادة تأسيس الاستماع بعد تأخير
         Future.delayed(const Duration(seconds: 3), () {
-          setupWebRTCCallbacks(webrtcService, supabaseService, playerId, gameContext);
+          if (_signalSubscription?.isPaused != false) {
+            log('🔄 إعادة تأسيس الاستماع للإشارات...');
+            _startEnhancedSignalListening(webrtcService, supabaseService, playerId, gameContext);
+          }
+        });
+      },
+      onDone: () {
+        log('📡 انتهى stream الإشارات - إعادة تأسيس...');
+        Future.delayed(const Duration(seconds: 2), () {
+          _startEnhancedSignalListening(webrtcService, supabaseService, playerId, gameContext);
         });
       },
     );
   }
 
-// نسخة محسنة من handleIncomingSignal
-  Future<void> handleIncomingSignalEnhanced(
+  Future<void> _handleIncomingSignalRobust(
       Map<String, dynamic> signal,
       WebRTCService webrtcService,
       SupabaseService supabaseService,
       String currentPlayerId,
+      BuildContext gameContext,
       ) async {
-    try {
-      final fromPeer = signal['from_peer'] as String;
-      final type = signal['type'] as String;
-      final data = signal['data'] as Map<String, dynamic>;
-      final signalId = signal['id'];
 
-      log('📨 معالجة إشارة $type من $fromPeer');
+    final fromPeer = signal['from_peer'] as String?;
+    final type = signal['type'] as String?;
+    final data = signal['data'] as Map<String, dynamic>?;
+    final signalId = signal['id'];
+
+    if (fromPeer == null || type == null || data == null) {
+      log('⚠️ إشارة ناقصة، تجاهل: $signal');
+      return;
+    }
+
+    if (fromPeer == currentPlayerId) {
+      log('⚠️ تجاهل إشارة من نفس اللاعب');
+      return;
+    }
+
+    try {
+      log('🔧 معالجة إشارة $type من $fromPeer');
 
       switch (type) {
         case 'offer':
-        // إنشاء peer connection إذا لم يكن موجوداً
-          if (!webrtcService.hasPeer(fromPeer)) {
-            await webrtcService.createPeerConnectionForPeer(fromPeer);
-            log('✅ تم إنشاء peer connection جديد لـ $fromPeer');
-          }
-
-          // تعيين remote description
-          await webrtcService.setRemoteDescription(
-            fromPeer,
-            RTCSessionDescription(data['sdp'], data['type']),
-          );
-
-          // إنشاء إجابة
-          await webrtcService.createAnswer(fromPeer);
-          log('✅ تمت معالجة العرض وإرسال الإجابة لـ $fromPeer');
+          await _handleOffer(fromPeer, data, webrtcService, gameContext);
           break;
 
         case 'answer':
-          if (webrtcService.hasPeer(fromPeer)) {
-            await webrtcService.setRemoteDescription(
-              fromPeer,
-              RTCSessionDescription(data['sdp'], data['type']),
-            );
-            log('✅ تم تعيين الإجابة من $fromPeer');
-          } else {
-            log('⚠️ لا يوجد peer connection لـ $fromPeer عند استقبال answer');
-          }
+          await _handleAnswer(fromPeer, data, webrtcService);
           break;
 
         case 'ice-candidate':
-          if (data['candidate'] != null &&
-              data['candidate'].toString().isNotEmpty &&
-              webrtcService.hasPeer(fromPeer)) {
-
-            final candidate = RTCIceCandidate(
-              data['candidate'],
-              data['sdpMid'],
-              data['sdpMLineIndex'],
-            );
-            await webrtcService.addIceCandidate(fromPeer, candidate);
-            log('✅ تم إضافة ICE candidate من $fromPeer');
-          } else {
-            log('⚠️ ICE candidate غير صالح أو لا يوجد peer connection');
-          }
+          await _handleIceCandidate(fromPeer, data, webrtcService);
           break;
 
         default:
-          log('⚠ نوع إشارة غير معروف: $type');
+          log('⚠️ نوع إشارة غير معروف: $type');
       }
 
       // تنظيف الإشارة بعد المعالجة الناجحة
-      await supabaseService.deleteSignalSafe(signalId, currentPlayerId);
+      await _cleanupSignalSafely(supabaseService, signalId, currentPlayerId);
+      log('✅ تمت معالجة الإشارة $type من $fromPeer بنجاح');
 
     } catch (e) {
-      log('✗ خطأ في معالجة الإشارة: $e');
+      log('❌ خطأ في معالجة الإشارة $type من $fromPeer: $e');
 
       // تنظيف الإشارة حتى لو فشلت المعالجة لتجنب التكرار
-      try {
-        await supabaseService.deleteSignalSafe(signal['id'], currentPlayerId);
-      } catch (deleteError) {
-        log('خطأ في تنظيف الإشارة: $deleteError');
-      }
+      await _cleanupSignalSafely(supabaseService, signalId, currentPlayerId);
     }
   }
 
-// تحديث handleIncomingSignal لمعالجة الحل البديل
-  Future<void> handleIncomingSignal(
-      Map<String, dynamic> signal,
+  Future<void> _handleOffer(
+      String fromPeer,
+      Map<String, dynamic> data,
       WebRTCService webrtcService,
-      SupabaseService supabaseService,
+      BuildContext gameContext,
       ) async {
+
+    log('📥 معالجة offer من $fromPeer');
+
+    // إنشاء peer connection إذا لم يكن موجوداً
+    if (!webrtcService.hasPeer(fromPeer)) {
+      log('🔧 إنشاء peer connection جديد لـ $fromPeer');
+      await webrtcService.createPeerConnectionForPeer(fromPeer);
+
+      // انتظار قصير للتأكد من إنشاء الاتصال
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    // تعيين remote description
+    final offer = RTCSessionDescription(data['sdp'], data['type']);
+    await webrtcService.setRemoteDescription(fromPeer, offer);
+    log('✅ تم تعيين remote description للعرض من $fromPeer');
+
+    // انتظار قصير قبل إنشاء الإجابة
+    await Future.delayed(const Duration(milliseconds: 200));
+
+    // إنشاء وإرسال الإجابة
+    await webrtcService.createAnswer(fromPeer);
+    log('✅ تم إنشاء وإرسال answer لـ $fromPeer');
+  }
+
+  Future<void> _handleAnswer(
+      String fromPeer,
+      Map<String, dynamic> data,
+      WebRTCService webrtcService,
+      ) async {
+
+    log('📥 معالجة answer من $fromPeer');
+
+    if (!webrtcService.hasPeer(fromPeer)) {
+      log('⚠️ لا يوجد peer connection لـ $fromPeer عند استلام answer');
+      return;
+    }
+
+    // تعيين remote description
+    final answer = RTCSessionDescription(data['sdp'], data['type']);
+    await webrtcService.setRemoteDescription(fromPeer, answer);
+    log('✅ تم تعيين remote description للإجابة من $fromPeer');
+  }
+
+  Future<void> _handleIceCandidate(
+      String fromPeer,
+      Map<String, dynamic> data,
+      WebRTCService webrtcService,
+      ) async {
+
+    final candidateStr = data['candidate'] as String?;
+
+    if (candidateStr == null || candidateStr.isEmpty) {
+      log('⚠️ ICE candidate فارغ من $fromPeer');
+      return;
+    }
+
+    log('🧊 معالجة ICE candidate من $fromPeer');
+
+    if (!webrtcService.hasPeer(fromPeer)) {
+      log('⚠️ لا يوجد peer connection لـ $fromPeer، تأجيل ICE candidate');
+      // يمكن إضافة منطق تأجيل هنا إذا لزم الأمر
+      return;
+    }
+
     try {
-      final fromPeer = signal['from_peer'] as String;
-      final type = signal['type'] as String;
-      final data = signal['data'] as Map<String, dynamic>;
-      final signalId = signal['id'];
+      final candidate = RTCIceCandidate(
+        candidateStr,
+        data['sdpMid'],
+        data['sdpMLineIndex'],
+      );
 
-      log('📨 معالجة إشارة $type من $fromPeer');
-
-      switch (type) {
-        case 'offer':
-          if (!webrtcService.hasPeer(fromPeer)) {
-            await webrtcService.createPeerConnectionForPeer(fromPeer);
-            log('تم إنشاء peer connection جديد لـ $fromPeer');
-          }
-
-          await webrtcService.setRemoteDescription(
-            fromPeer,
-            RTCSessionDescription(data['sdp'], data['type']),
-          );
-
-          await webrtcService.createAnswer(fromPeer);
-          log('✓ تمت معالجة العرض وإرسال الإجابة لـ $fromPeer');
-          break;
-
-        case 'answer':
-          await webrtcService.setRemoteDescription(
-            fromPeer,
-            RTCSessionDescription(data['sdp'], data['type']),
-          );
-          log('✓ تم تعيين الإجابة من $fromPeer');
-          break;
-
-        case 'ice-candidate':
-          if (data['candidate'] != null && data['candidate'].toString().isNotEmpty) {
-            final candidate = RTCIceCandidate(
-              data['candidate'],
-              data['sdpMid'],
-              data['sdpMLineIndex'],
-            );
-            await webrtcService.addIceCandidate(fromPeer, candidate);
-            log('✓ تم إضافة ICE candidate من $fromPeer');
-          }
-          break;
-
-        default:
-          log('⚠ نوع إشارة غير معروف: $type');
-      }
-
-      // تنظيف الإشارة بعد المعالجة
-      if (signalId != null) {
-        if (signalId is int) {
-          // إشارة من الجدول الأصلي
-          await supabaseService.deleteSignal(signalId);
-        } else {
-          // إشارة من الحل البديل - تنظيف custom_data
-          await supabaseService.clearReceivedSignal(signal['to_peer']);
-        }
-        log('🗑️ تم تنظيف الإشارة');
-      }
+      await webrtcService.addIceCandidate(fromPeer, candidate);
+      log('✅ تم إضافة ICE candidate من $fromPeer');
 
     } catch (e) {
-      log('✗ خطأ في معالجة الإشارة: $e');
-
-      // تنظيف الإشارة حتى لو فشلت المعالجة
-      final signalId = signal['id'];
-      if (signalId != null) {
-        try {
-          if (signalId is int) {
-            await supabaseService.deleteSignal(signalId);
-          } else {
-            await supabaseService.clearReceivedSignal(signal['to_peer']);
-          }
-        } catch (deleteError) {
-          log('خطأ في تنظيف الإشارة: $deleteError');
-        }
-      }
+      log('❌ فشل في إضافة ICE candidate من $fromPeer: $e');
     }
   }
 
+  Future<void> _cleanupSignalSafely(
+      SupabaseService supabaseService,
+      dynamic signalId,
+      String playerId,
+      ) async {
+    try {
+      if (signalId != null) {
+        await supabaseService.deleteSignalSafe(signalId, playerId);
+      }
+    } catch (e) {
+      log('⚠️ خطأ في تنظيف الإشارة: $e');
+    }
+  }
+
+  void _startSignalCleanupTimer() {
+    _signalCleanupTimer?.cancel();
+    _signalCleanupTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      // تنظيف دوري للإشارات القديمة
+      final gameProvider = Provider.of<GameProvider>(NavigationService.navigatorKey.currentContext!, listen: false);
+      if (gameProvider.currentRoom != null) {
+        final supabaseService = SupabaseService();
+        supabaseService.cleanupOldSignals(gameProvider.currentRoom!.id);
+      }
+    });
+  }
+
+  // الباقي من الدوال كما هي...
   void checkConnectionAndRefresh(RealtimeManager realtimeManager, String playerId, BuildContext context) {
     try {
       final gameProvider = Provider.of<GameProvider>(context, listen: false);
@@ -342,4 +409,16 @@ mixin GameScreenMixin {
         return 'انتهت اللعبة';
     }
   }
+
+  // تنظيف الموارد
+  void disposeMixin() {
+    _signalSubscription?.cancel();
+    _signalCleanupTimer?.cancel();
+    _processedSignals.clear();
+  }
+}
+
+// خدمة للوصول لـ context من أي مكان
+class NavigationService {
+  static GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 }

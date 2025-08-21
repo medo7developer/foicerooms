@@ -5,7 +5,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 class SignalingService {
   final SupabaseClient _client = Supabase.instance.client;
 
-  /// إرسال إشارة WebRTC مع حل بديل في حالة فشل RLS
+// في SignalingService - تحديث دالة sendSignal
   Future<bool> sendSignal({
     required String roomId,
     required String fromPeer,
@@ -13,37 +13,41 @@ class SignalingService {
     required String type,
     required Map<String, dynamic> data,
   }) async {
-    try {
-      // محاولة إرسال الإشارة عادي أولاً
-      final result = await _client.from('signaling').insert({
-        'room_id': roomId,
-        'from_peer': fromPeer,
-        'to_peer': toPeer,
-        'type': type,
-        'data': data,
-        'created_at': DateTime.now().toIso8601String(),
-      }).select();
+    int maxRetries = 3;
+    int retryCount = 0;
 
-      if (result.isNotEmpty) {
-        log('✓ تم إرسال إشارة $type من $fromPeer إلى $toPeer');
-        return true;
+    while (retryCount < maxRetries) {
+      try {
+        final result = await _client.from('signaling').insert({
+          'room_id': roomId,
+          'from_peer': fromPeer,
+          'to_peer': toPeer,
+          'type': type,
+          'data': data,
+          'created_at': DateTime.now().toIso8601String(),
+        }).select();
+
+        if (result.isNotEmpty) {
+          log('✅ تم إرسال إشارة $type من $fromPeer إلى $toPeer');
+          return true;
+        }
+
+      } catch (e) {
+        retryCount++;
+        log('❌ فشل إرسال الإشارة (محاولة $retryCount/$maxRetries): $e');
+
+        if (retryCount < maxRetries) {
+          // انتظار متزايد بين المحاولات
+          await Future.delayed(Duration(seconds: retryCount * 2));
+        } else {
+          // كحل أخير، استخدم الحل البديل
+          log('🔄 استخدام الحل البديل لإرسال الإشارة');
+          return await _sendSignalViaPlayers(roomId, fromPeer, toPeer, type, data);
+        }
       }
-      return false;
-
-    } on PostgrestException catch (e) {
-      if (e.code == '42501') {
-        // خطأ RLS - استخدام الحل البديل
-        log('⚠️ خطأ RLS في جدول signaling - استخدام حل بديل');
-        return await _sendSignalViaPlayers(roomId, fromPeer, toPeer, type, data);
-      }
-
-      log('❌ خطأ PostgrestException: ${e.message}');
-      return false;
-
-    } catch (e) {
-      log('❌ خطأ عام في إرسال الإشارة: $e');
-      return false;
     }
+
+    return false;
   }
 
   /// حل بديل عبر جدول players

@@ -152,7 +152,7 @@ class _GameScreenState extends State<GameScreen>
     }
   }
 
-// دالة محسنة للاتصال بالآخرين
+// تعديل _connectToOtherPlayersEnhanced
   Future<void> _connectToOtherPlayersEnhanced(List<Player> players) async {
     if (_hasConnectedToPeers) return;
 
@@ -168,54 +168,107 @@ class _GameScreenState extends State<GameScreen>
 
       log('🚀 بدء الاتصال المحسن بـ ${connectedPlayers.length} لاعبين');
 
-      // الاتصال بكل لاعب مع تأخير بينهم
+      // **تنظيف أي اتصالات سابقة أولاً**
+      for (final player in connectedPlayers) {
+        if (_webrtcService.hasPeer(player.id)) {
+          log('🗑️ تنظيف اتصال سابق مع ${player.id}');
+          await _webrtcService.closePeerConnection(player.id);
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+      }
+
+      // إنشاء جميع peer connections جديدة
+      for (final player in connectedPlayers) {
+        try {
+          log('🔧 إنشاء peer connection جديد مع ${player.name}');
+          await _webrtcService.createPeerConnectionForPeer(player.id);
+          await Future.delayed(const Duration(milliseconds: 500));
+          log('✅ تم إنشاء peer connection مع ${player.id}');
+        } catch (e) {
+          log('❌ خطأ في إنشاء peer connection مع ${player.id}: $e');
+        }
+      }
+
+      // انتظار استقرار الاتصالات
+      await Future.delayed(const Duration(seconds: 2));
+
+      // إرسال offers واحد تلو الآخر
       for (int i = 0; i < connectedPlayers.length; i++) {
         final player = connectedPlayers[i];
 
         try {
-          log('📞 الاتصال مع ${player.name} (${i + 1}/${connectedPlayers.length})');
+          log('📤 إنشاء offer لـ ${player.name} (${i + 1}/${connectedPlayers.length})');
 
-          // إنشاء peer connection
-          await _webrtcService.createPeerConnectionForPeer(player.id);
+          if (_webrtcService.hasPeer(player.id)) {
+            await _webrtcService.createOffer(player.id);
+            log('✅ تم إرسال offer إلى ${player.id}');
 
-          // انتظار للتأكد من استقرار الاتصال
-          await Future.delayed(const Duration(milliseconds: 1200));
-
-          // إنشاء العرض مع retry logic
-          bool offerSuccess = false;
-          for (int attempt = 1; attempt <= 3; attempt++) {
-            try {
-              await _webrtcService.createOffer(player.id);
-              offerSuccess = true;
-              log('✅ تم إرسال عرض إلى ${player.id} (المحاولة $attempt)');
-              break;
-            } catch (e) {
-              log('❌ فشل العرض للمحاولة $attempt: $e');
-              if (attempt < 3) {
-                await Future.delayed(Duration(seconds: attempt));
-              }
+            // انتظار بين العروض
+            if (i < connectedPlayers.length - 1) {
+              await Future.delayed(const Duration(seconds: 3));
             }
           }
 
-          if (!offerSuccess) {
-            log('❌ فشل نهائياً في إرسال عرض إلى ${player.id}');
-          }
-
-          // تأخير بين الاتصالات
-          if (i < connectedPlayers.length - 1) {
-            await Future.delayed(const Duration(milliseconds: 800));
-          }
-
         } catch (e) {
-          log('❌ خطأ في الاتصال باللاعب ${player.id}: $e');
+          log('❌ خطأ في إرسال offer إلى ${player.id}: $e');
         }
       }
 
       _hasConnectedToPeers = true;
-      log('✅ تم الانتهاء من محاولات الاتصال المحسنة');
+      log('✅ تم الانتهاء من إرسال جميع العروض');
 
     } catch (e) {
-      log('❌ خطأ عام في الاتصال باللاعبين: $e');
+      log('❌ خطأ عام في الاتصال: $e');
+    }
+  }
+// دالة تشخيص مفصلة جديدة
+  Future<void> _performDetailedDiagnostics() async {
+    try {
+      log('🔍 === بدء التشخيص المفصل ===');
+
+      final gameProvider = context.read<GameProvider>();
+      final connectedPlayers = gameProvider.currentRoom?.players
+          .where((p) => p.isConnected && p.id != widget.playerId)
+          .toList() ?? [];
+
+      log('👥 عدد اللاعبين المتصلين: ${connectedPlayers.length}');
+
+      for (final player in connectedPlayers) {
+        final hasPeer = _webrtcService.hasPeer(player.id);
+        final hasStream = _webrtcService.getRemoteStream(player.id) != null;
+        final isHealthy = _webrtcService.isPeerHealthy(player.id);
+
+        log('🔍 ${player.name}:');
+        log('   📡 Has Peer: $hasPeer');
+        log('   🎵 Has Stream: $hasStream');
+        log('   💚 Is Healthy: $isHealthy');
+
+        if (!isHealthy && hasPeer) {
+          log('🔧 محاولة إصلاح الاتصال مع ${player.id}');
+          try {
+            await _webrtcService.restartFailedConnections();
+          } catch (e) {
+            log('❌ فشل إصلاح الاتصال: $e');
+          }
+        }
+      }
+
+      // فحص الصوت المحلي
+      final localStream = _webrtcService.localStream;
+      if (localStream != null) {
+        final audioTracks = localStream.getAudioTracks();
+        log('🎤 مسارات صوتية محلية: ${audioTracks.length}');
+
+        for (final track in audioTracks) {
+          log('   🎵 Track ${track.id}: enabled=${track.enabled}');        }
+      } else {
+        log('❌ لا يوجد مجرى صوتي محلي!');
+      }
+
+      log('🔍 === انتهاء التشخيص المفصل ===');
+
+    } catch (e) {
+      log('❌ خطأ في التشخيص المفصل: $e');
     }
   }
 

@@ -33,8 +33,6 @@ class GameContent extends StatelessWidget {
     // تحقق من حالة اللاعب أولاً
     final isEliminated = gameProvider.isCurrentPlayerEliminated;
     if (isEliminated) {
-      // استيراد الملف الجديد في أعلى الملف:
-      // import '../game_states/eliminated_player_content.dart';
       return EliminatedPlayerContent(
         room: room,
         currentPlayer: currentPlayer,
