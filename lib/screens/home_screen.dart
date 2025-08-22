@@ -10,6 +10,7 @@ import '../providers/game_provider.dart';
 import '../services/experience_service.dart';
 import '../services/player_service.dart';
 import '../services/supabase_service.dart';
+import '../services/user_services/online_users_service.dart';
 import '../widgets/home/create_room_fab.dart';
 import '../widgets/home/current_room_banner.dart';
 import '../widgets/home/home_header.dart';
@@ -18,6 +19,7 @@ import '../widgets/home/rooms_list_view.dart';
 import '../widgets/home/rooms_tab_section.dart';
 import 'create_room_screen.dart';
 import 'game_screen.dart';
+import 'online_users_screen.dart';
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
   @override
@@ -36,6 +38,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   late TabController _tabController;
   late AnimationController _refreshController;
   late AnimationController _floatingController;
+  final OnlineUsersService _onlineUsersService = OnlineUsersService();
+
   @override
   void initState() {
     super.initState();
@@ -51,8 +55,19 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     )..repeat(reverse: true);
     _initializeApp();
   }
+  // 7. تعديل dispose لتنظيف الموارد
   @override
   void dispose() {
+    // تحديث حالة المستخدم كغير متصل عند الخروج
+    if (_playerId != null && _nameController.text.trim().isNotEmpty) {
+      _onlineUsersService.updateUserStatus(
+        _playerId!,
+        _nameController.text.trim(),
+        false,
+      );
+    }
+
+    _onlineUsersService.dispose();
     _tabController.dispose();
     _refreshController.dispose();
     _floatingController.dispose();
@@ -60,15 +75,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _autoRefreshTimer?.cancel();
     super.dispose();
   }
+
+  // 3. تعديل دالة _initializeApp لتحديث حالة المستخدم
   Future<void> _initializeApp() async {
     await _loadSavedData();
-// التأكد من وجود معرف اللاعب واسمه قبل تهيئة الإحصائيات
+
+    // تحديث حالة المستخدم كمتصل
     if (_playerId != null && _nameController.text.trim().isNotEmpty) {
+      await _onlineUsersService.updateUserStatus(
+        _playerId!,
+        _nameController.text.trim(),
+        true,
+      );
       await _initializePlayerStats();
     }
+
     await _checkUserStatus();
     await _loadAvailableRooms();
   }
+
 // إضافة دالة للتحديث التلقائي
   void _startAutoRefresh() {
     _autoRefreshTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
@@ -231,8 +256,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (result.success) {
 // انتظار قصير للتأكد من تحديث قاعدة البيانات
         await Future.delayed(const Duration(milliseconds: 500));
+
+        // تحديث حالة المستخدم عند الانضمام
+        await _onlineUsersService.updateUserStatus(
+          _playerId!,
+          _nameController.text.trim(),
+          true,
+          roomId: room.id,
+          roomName: room.name,
+        );
 // جلب بيانات الغرفة المحدثة من الخادم
         final updatedRoom = await supabaseService.getRoomById(room.id);
+
         if (updatedRoom != null) {
 // محاولة الانضمام في GameProvider بالبيانات المحدثة
           final success = gameProvider.joinRoom(updatedRoom.id, _playerId!, _nameController.text.trim());
@@ -328,16 +363,24 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       await _loadAvailableRooms(showLoading: false);
     }
   }
-// تحسين دالة _leaveCurrentRoom
+  // 5. تعديل دالة _leaveCurrentRoom
   Future<void> _leaveCurrentRoom() async {
     if (_playerId == null) return;
+
     try {
       final supabaseService = context.read<SupabaseService>();
       await supabaseService.leaveRoom(_playerId!);
-// تحديث فوري للحالة
+
+      // تحديث حالة المستخدم عند المغادرة
+      await _onlineUsersService.updateUserStatus(
+        _playerId!,
+        _nameController.text.trim(),
+        true, // متصل لكن ليس في غرفة
+      );
+
       setState(() => _currentUserStatus = UserStatus.free);
       _showSnackBar('تم مغادرة الغرفة');
-// تحديث قوائم الغرف فوراً
+
       await Future.delayed(const Duration(milliseconds: 300));
       await _loadAvailableRooms(showLoading: false);
     } catch (e) {
@@ -345,7 +388,34 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _showSnackBar('فشل في مغادرة الغرفة', isError: true);
     }
   }
-// تحسين دالة _deleteRoom
+
+  // 6. إضافة دالة لفتح شاشة المستخدمين المتصلين
+  void _showOnlineUsers() {
+    if (_playerId == null || _nameController.text.trim().isEmpty) {
+      _showSnackBar('يرجى إدخال اسمك أولاً', isError: true);
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => OnlineUsersScreen(
+          currentPlayerId: _playerId!,
+          currentPlayerName: _nameController.text.trim(),
+          currentRoomId: _currentUserStatus?.roomId,
+          currentRoomName: _currentUserStatus?.roomName,
+        ),
+      ),
+    ).then((result) {
+      // تحديث البيانات عند العودة
+      if (result == true) {
+        _checkUserStatus();
+        _loadAvailableRooms(showLoading: false);
+      }
+    });
+  }
+
+  // تحسين دالة _deleteRoom
   Future<void> _deleteRoom(GameRoom room) async {
     final confirmed = await _showDeleteDialog(room);
     if (confirmed == true && _playerId != null) {
@@ -510,6 +580,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       ),
     );
   }
+
   Future<void> _rejoinRoom() async {
     if (_currentUserStatus?.roomId == null || _playerId == null) return;
     try {
@@ -536,6 +607,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _showSnackBar('فشل في العودة للغرفة', isError: true);
     }
   }
+
   Future<bool?> _showDeleteDialog(GameRoom room) {
     return showDialog<bool>(
       context: context,
@@ -621,11 +693,39 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           child: Column(
             children: [
               const HomeHeader(),
+              // إضافة زر المستخدمين المتصلين هنا
+              if (_nameController.text.trim().isNotEmpty)
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: _showOnlineUsers,
+                          icon: const Icon(Icons.people, color: Colors.white),
+                          label: const Text(
+                            'المستخدمون المتصلون',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.deepPurple,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
               if (_currentUserStatus?.inRoom == true)
                 CurrentRoomBanner(
                   userStatus: _currentUserStatus!,
                   onRejoinRoom: _rejoinRoom,
                 ),
+
               PlayerNameSection(
                 controller: _nameController,
                 savedPlayerName: _savedPlayerName,

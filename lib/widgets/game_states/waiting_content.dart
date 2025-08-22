@@ -6,6 +6,8 @@ import '../../../services/supabase_service.dart';
 import '../../models/game_room_model.dart';
 import '../../models/player_model.dart';
 import '../../providers/game_state.dart';
+import '../../screens/online_users_screen.dart';
+import '../../services/user_services/online_users_service.dart';
 
 class WaitingContent extends StatefulWidget {
   final GameRoom room;
@@ -19,6 +21,7 @@ class _WaitingContentState extends State<WaitingContent> {
   StreamSubscription<Map<String, dynamic>>? _roomSubscription;
   StreamSubscription<List<Map<String, dynamic>>>? _playersSubscription;
   final SupabaseService _supabaseService = SupabaseService();
+  final OnlineUsersService _onlineUsersService = OnlineUsersService();
 
   // متغيرات محلية لتتبع الحالة
   bool _canStartGame = false;
@@ -34,11 +37,47 @@ class _WaitingContentState extends State<WaitingContent> {
     _updateLocalState();
   }
 
+  // 4. تعديل دالة dispose لتنظيف الموارد
   @override
   void dispose() {
     _roomSubscription?.cancel();
     _playersSubscription?.cancel();
+    _onlineUsersService.dispose();
     super.dispose();
+  }
+
+  // 3. إضافة دالة لفتح شاشة دعوة المستخدمين
+  void _inviteUsers() {
+    final gameProvider = Provider.of<GameProvider>(context, listen: false);
+    final currentPlayer = gameProvider.currentPlayer;
+    final room = gameProvider.currentRoom ?? widget.room;
+
+    if (currentPlayer == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('خطأ في بيانات اللاعب'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => OnlineUsersScreen(
+          currentPlayerId: currentPlayer.id,
+          currentPlayerName: currentPlayer.name,
+          currentRoomId: room.id,
+          currentRoomName: room.name,
+        ),
+      ),
+    ).then((result) {
+      // تحديث البيانات عند العودة
+      if (result == true) {
+        _updateLocalState();
+      }
+    });
   }
 
   // دالة لتحديث الحالة المحلية
@@ -410,10 +449,39 @@ class _WaitingContentState extends State<WaitingContent> {
     );
   }
 
+  // 5. تعديل _buildStartGameButton لإضافة زر الدعوة
   Widget _buildStartGameButton(BuildContext context, GameProvider gameProvider, bool canStart, int connectedCount) {
     return Column(
       children: [
-        const SizedBox(height: 25),
+        const SizedBox(height: 20),
+
+        // زر دعوة المستخدمين (للمالك فقط)
+        if (_isCreator) ...[
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _inviteUsers,
+              icon: const Icon(Icons.person_add, color: Colors.blue),
+              label: const Text(
+                'دعوة لاعبين',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.blue,
+                ),
+              ),
+              style: OutlinedButton.styleFrom(
+                side: const BorderSide(color: Colors.blue),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 15),
+        ],
+
+        // زر بدء اللعبة
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(

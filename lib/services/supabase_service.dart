@@ -1,5 +1,6 @@
 import 'dart:developer';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:voice_rooms_app/services/user_services/online_users_service.dart';
 import '../models/game_room_model.dart';
 import '../providers/game_provider.dart';
 
@@ -19,6 +20,7 @@ class SupabaseService {
   final GameLogicService _gameLogicService = GameLogicService();
   final VotingService _votingService = VotingService();
   final SignalingService _signalingService = SignalingService();
+  final OnlineUsersService _onlineUsersService = OnlineUsersService();
 
   // ===== خدمات الغرف =====
 
@@ -39,6 +41,53 @@ class SupabaseService {
       roundDuration: roundDuration,
       creatorName: creatorName ?? 'منشئ الغرفة', // تمرير الاسم
     );
+  }
+
+  /// تحديث حالة المستخدم
+  Future<void> updateUserOnlineStatus(String playerId, String playerName, bool isOnline, {String? roomId, String? roomName}) async {
+    return await _onlineUsersService.updateUserStatus(playerId, playerName, isOnline, roomId: roomId, roomName: roomName);
+  }
+
+  /// الحصول على المستخدمين المتصلين
+  Future<List<OnlineUser>> getOnlineUsers(String excludePlayerId) async {
+    return await _onlineUsersService.getOnlineUsers(excludePlayerId);
+  }
+
+  /// الاستماع للمستخدمين المتصلين
+  Stream<List<OnlineUser>> listenToOnlineUsers(String excludePlayerId) {
+    return _onlineUsersService.listenToOnlineUsers(excludePlayerId);
+  }
+
+  /// إرسال دعوة
+  Future<bool> sendInvitation({
+    required String fromPlayerId,
+    required String fromPlayerName,
+    required String toPlayerId,
+    required String roomId,
+    required String roomName,
+  }) async {
+    return await _onlineUsersService.sendInvitation(
+      fromPlayerId: fromPlayerId,
+      fromPlayerName: fromPlayerName,
+      toPlayerId: toPlayerId,
+      roomId: roomId,
+      roomName: roomName,
+    );
+  }
+
+  /// الاستماع للدعوات
+  Stream<List<Invitation>> listenToInvitations(String playerId) {
+    return _onlineUsersService.listenToInvitations(playerId);
+  }
+
+  /// الرد على الدعوة
+  Future<bool> respondToInvitation(String invitationId, String status) async {
+    return await _onlineUsersService.respondToInvitation(invitationId, status);
+  }
+
+  /// تنظيف الدعوات القديمة
+  Future<void> cleanupOldInvitations() async {
+    return await _onlineUsersService.cleanupOldInvitations();
   }
 
   /// الحصول على الغرف المتاحة
