@@ -98,6 +98,7 @@ class _GameScreenState extends State<GameScreen>
       // إضافة تهيئة ExperienceService
       final experienceService = ExperienceService();
       gameProvider.setExperienceService(experienceService);
+      _setupGameEndListener(gameProvider, experienceService);
 
       _realtimeManager.registerGameProvider(gameProvider);
 
@@ -149,6 +150,45 @@ class _GameScreenState extends State<GameScreen>
           ),
         );
       }
+    }
+  }
+
+  void _setupGameEndListener(GameProvider gameProvider, ExperienceService experienceService) {
+    // مراقبة تغييرات حالة اللعبة
+    Timer.periodic(const Duration(seconds: 2), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      final room = gameProvider.currentRoom;
+      if (room != null && room.state == GameState.finished) {
+        timer.cancel();
+
+        // معالجة المكافآت عند انتهاء اللعبة
+        Future.delayed(const Duration(seconds: 1), () async {
+          if (mounted) {
+            await _processGameEndRewards(experienceService, room);
+          }
+        });
+      }
+    });
+  }
+
+  Future<void> _processGameEndRewards(ExperienceService experienceService, GameRoom room) async {
+    try {
+      log('🎉 معالجة مكافآت نهاية اللعبة للاعب: ${widget.playerId}');
+
+      // التأكد من معالجة المكافآت
+      await experienceService.ensureGameRewardsProcessed(widget.playerId, room);
+
+      // تحديث GameProvider
+      final gameProvider = context.read<GameProvider>();
+      await gameProvider.loadPlayerStats(widget.playerId);
+
+      log('✅ تم الانتهاء من معالجة مكافآت نهاية اللعبة');
+    } catch (e) {
+      log('❌ خطأ في معالجة مكافآت نهاية اللعبة: $e');
     }
   }
 

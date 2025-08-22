@@ -3,7 +3,9 @@ import 'dart:developer';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../models/experience_models.dart';
 import '../models/game_room_model.dart';
+import '../models/player_model.dart';
 import '../providers/game_provider.dart';
+import '../providers/game_state.dart';
 
 class ExperienceService {
   final SupabaseClient _client = Supabase.instance.client;
@@ -127,7 +129,7 @@ class ExperienceService {
     }
   }
 
-  /// معالجة نتيجة اللعبة وتحديث الإحصائيات
+  /// معالجة نتيجة اللعبة وتحديث الإحصائيات (محسن)
   Future<List<GameReward>> processGameResult({
     required String playerId,
     required String playerName,
@@ -137,19 +139,34 @@ class ExperienceService {
     required bool survived,
   }) async {
     try {
+      log('🎮 معالجة نتيجة اللعبة للاعب: $playerId');
+
       // التأكد من وجود اللاعب أولاً
       await _ensurePlayerExists(playerId, playerName);
 
-      final currentStats = await getPlayerStats(playerId, playerName: playerName);
-      if (currentStats == null) {
-        log('فشل في الحصول على إحصائيات اللاعب: $playerId');
-        return [];
+      // جلب الإحصائيات الحالية بناءً على ID فقط
+      final currentStats = await _client
+          .from('player_stats')
+          .select('*')
+          .eq('player_id', playerId)
+          .maybeSingle();
+
+      PlayerStats stats;
+      if (currentStats != null) {
+        stats = PlayerStats.fromJson(currentStats);
+        // تحديث الاسم إذا لزم الأمر
+        if (stats.playerName != playerName && playerName.isNotEmpty) {
+          stats = stats.copyWith(playerName: playerName);
+        }
+      } else {
+        // إنشاء جديد إذا لم توجد إحصائيات
+        stats = await _createNewPlayerStatsWithName(playerId, playerName);
       }
 
       final rewards = <GameReward>[];
       int xpGained = 0;
 
-      // حساب الخبرة الأساسية
+      // حساب المكافآت (نفس المنطق السابق)
       if (won) {
         xpGained += RewardConstants.xpForWin;
         rewards.add(GameReward(
@@ -166,7 +183,6 @@ class ExperienceService {
         ));
       }
 
-      // مكافآت إضافية
       if (won && wasSpy) {
         xpGained += RewardConstants.xpForSpyWin;
         rewards.add(GameReward(
@@ -195,42 +211,48 @@ class ExperienceService {
       }
 
       // تحديث الإحصائيات
-      final updatedStats = currentStats.copyWith(
-        playerName: playerName, // تحديث الاسم
-        totalGames: currentStats.totalGames + 1,
-        wins: won ? currentStats.wins + 1 : currentStats.wins,
-        losses: !won ? currentStats.losses + 1 : currentStats.losses,
-        spyWins: (won && wasSpy) ? currentStats.spyWins + 1 : currentStats.spyWins,
-        detectiveWins: (won && !wasSpy) ? currentStats.detectiveWins + 1 : currentStats.detectiveWins,
-        timesWasSpy: wasSpy ? currentStats.timesWasSpy + 1 : currentStats.timesWasSpy,
-        timesDetectedSpy: detectedSpy ? currentStats.timesDetectedSpy + 1 : currentStats.timesDetectedSpy,
-        totalXP: currentStats.totalXP + xpGained,
-        level: ((currentStats.totalXP + xpGained) / RewardConstants.xpPerLevel).floor() + 1,
+      final updatedStats = stats.copyWith(
+        totalGames: stats.totalGames + 1,
+        wins: won ? stats.wins + 1 : stats.wins,
+        losses: !won ? stats.losses + 1 : stats.losses,
+        spyWins: (won && wasSpy) ? stats.spyWins + 1 : stats.spyWins,
+        detectiveWins: (won && !wasSpy) ? stats.detectiveWins + 1 : stats.detectiveWins,
+        timesWasSpy: wasSpy ? stats.timesWasSpy + 1 : stats.timesWasSpy,
+        timesDetectedSpy: detectedSpy ? stats.timesDetectedSpy + 1 : stats.timesDetectedSpy,
+        totalXP: stats.totalXP + xpGained,
+        level: ((stats.totalXP + xpGained) / RewardConstants.xpPerLevel).floor() + 1,
         lastUpdated: DateTime.now(),
       );
 
       // التحقق من الشارات الجديدة
-      final newBadges = await _checkForNewBadges(currentStats, updatedStats);
+      final newBadges = await _checkForNewBadges(stats, updatedStats);
       rewards.addAll(newBadges);
 
-      // حفظ الإحصائيات المحدثة
-      final finalStats = updatedStats.copyWith(
-          badges: updatedStats.badges.isEmpty ?
-          newBadges.where((r) => r.type == RewardType.badge)
-              .fold<Map<BadgeType, int>>({}, (map, reward) {
-            if (reward.badgeType != null) {
-              map[reward.badgeType!] = 1;
-            }
-            return map;
-          }) : updatedStats.badges
-      );
+      // حفظ مع إعادة المحاولة
+      bool saved = false;
+      int retryCount = 0;
+      while (!saved && retryCount < 3) {
+        try {
+          await _client.from('player_stats').upsert(updatedStats.toJson());
+          saved = true;
+          log('✅ تم حفظ الإحصائيات المحدثة للاعب $playerId - المحاولة ${retryCount + 1}');
+        } catch (e) {
+          retryCount++;
+          log('❌ فشلت المحاولة $retryCount في حفظ الإحصائيات: $e');
+          if (retryCount < 3) {
+            await Future.delayed(Duration(milliseconds: 500 * retryCount));
+          }
+        }
+      }
 
-      await _savePlayerStats(finalStats);
+      if (!saved) {
+        log('❌ فشل نهائي في حفظ الإحصائيات للاعب $playerId');
+      }
 
-      log('تم تحديث إحصائيات اللاعب $playerId - XP: +$xpGained');
+      log('🎉 تم تحديث إحصائيات اللاعب $playerId - XP: +$xpGained, المكافآت: ${rewards.length}');
       return rewards;
     } catch (e) {
-      log('خطأ في معالجة نتيجة اللعبة: $e');
+      log('❌ خطأ في معالجة نتيجة اللعبة: $e');
       return [];
     }
   }
@@ -385,10 +407,10 @@ class ExperienceService {
     }
   }
 
-  /// التأكد من وجود الإحصائيات مع الاسم الصحيح
+  /// التأكد من وجود الإحصائيات مع الاسم الصحيح (محسن)
   Future<PlayerStats> ensurePlayerStatsWithName(String playerId, String playerName) async {
     try {
-      // البحث عن الإحصائيات الموجودة
+      // استخدام playerId فقط للبحث - لا نعتمد على الاسم
       final existingStats = await _client
           .from('player_stats')
           .select('*')
@@ -396,10 +418,13 @@ class ExperienceService {
           .maybeSingle();
 
       if (existingStats != null) {
-        // الإحصائيات موجودة، تحديث الاسم إذا كان مختلف
-        final currentName = existingStats['player_name'] ?? 'لاعب مجهول';
+        final stats = PlayerStats.fromJson(existingStats);
 
-        if (currentName != playerName) {
+        // تحديث الاسم فقط إذا كان مختلف ولا نعيد إنشاء البيانات
+        if (stats.playerName != playerName &&
+            playerName.isNotEmpty &&
+            playerName != 'لاعب مجهول') {
+
           await _client
               .from('player_stats')
               .update({
@@ -409,20 +434,32 @@ class ExperienceService {
               .eq('player_id', playerId);
 
           log('تم تحديث اسم اللاعب في الإحصائيات: $playerId -> $playerName');
+          return stats.copyWith(playerName: playerName);
         }
 
-        // إرجاع الإحصائيات مع الاسم المحدث
-        return PlayerStats.fromJson({
-          ...existingStats,
-          'player_name': playerName,
-        });
+        return stats;
       } else {
-        // إنشاء إحصائيات جديدة مع الاسم
+        // إنشاء إحصائيات جديدة فقط إذا لم تكن موجودة
         return await _createNewPlayerStatsWithName(playerId, playerName);
       }
     } catch (e) {
       log('خطأ في التأكد من إحصائيات اللاعب: $e');
-      // إرجاع إحصائيات افتراضية مع الاسم
+      // إرجاع الإحصائيات الموجودة حتى لو فشل التحديث
+      try {
+        final fallbackStats = await _client
+            .from('player_stats')
+            .select('*')
+            .eq('player_id', playerId)
+            .maybeSingle();
+
+        if (fallbackStats != null) {
+          return PlayerStats.fromJson(fallbackStats);
+        }
+      } catch (e2) {
+        log('فشل في جلب الإحصائيات الاحتياطية: $e2');
+      }
+
+      // إنشاء افتراضي في حالة الفشل الكامل
       return PlayerStats(
         playerId: playerId,
         playerName: playerName,
@@ -587,12 +624,9 @@ class ExperienceService {
     }
   }
 
-  /// الحصول على قائمة المتصدرين مع مزامنة الأسماء أولاً
+  /// الحصول على قائمة المتصدرين (محسن لحماية البيانات)
   Future<List<LeaderboardEntry>> getLeaderboard({int limit = 50}) async {
     try {
-      // مزامنة الأسماء أولاً
-      await syncPlayerNamesFromPlayersTable();
-
       final response = await _client
           .from('player_stats')
           .select('*')
@@ -609,36 +643,14 @@ class ExperienceService {
       for (int i = 0; i < response.length; i++) {
         try {
           final data = response[i];
+          final playerId = data['player_id'] ?? '';
 
-          // محاولة جلب الاسم الحديث من جدول players
+          if (playerId.isEmpty) continue;
+
           String playerName = data['player_name'] ?? 'لاعب مجهول';
 
-          // إذا كان الاسم مجهول، محاولة جلبه من جدول players
-          if (playerName == 'لاعب مجهول' || playerName.isEmpty) {
-            try {
-              final playerData = await _client
-                  .from('players')
-                  .select('name')
-                  .eq('id', data['player_id'])
-                  .limit(1)
-                  .maybeSingle();
-
-              if (playerData != null && playerData['name'] != null && playerData['name'].isNotEmpty) {
-                playerName = playerData['name'];
-
-                // تحديث الاسم في جدول الإحصائيات
-                await _client
-                    .from('player_stats')
-                    .update({'player_name': playerName})
-                    .eq('player_id', data['player_id']);
-              }
-            } catch (e) {
-              log('خطأ في جلب اسم اللاعب من جدول players: $e');
-            }
-          }
-
           entries.add(LeaderboardEntry(
-            playerId: data['player_id'] ?? '',
+            playerId: playerId,
             playerName: playerName,
             totalXP: (data['total_xp'] as num?)?.toInt() ?? 0,
             level: (data['level'] as num?)?.toInt() ?? 1,
@@ -731,4 +743,43 @@ class ExperienceService {
       return [];
     }
   }
+
+  /// التأكد من معالجة مكافآت اللعبة المنتهية
+  Future<void> ensureGameRewardsProcessed(String playerId, GameRoom room) async {
+    try {
+      // التحقق من أن اللعبة انتهت فعلاً
+      if (room.state != GameState.finished) return;
+
+      // البحث عن اللاعب في الغرفة
+      final player = room.players.firstWhere(
+            (p) => p.id == playerId,
+        orElse: () => Player(
+          id: playerId,
+          name: 'لاعب محذوف',
+          role: PlayerRole.normal,
+        ),
+      );
+
+      // تحديد النتيجة
+      final wasSpy = player.role == PlayerRole.spy;
+      final spyWon = room.winner == 'spy';
+      final won = wasSpy ? spyWon : !spyWon;
+      final detectedSpy = !wasSpy && !spyWon;
+
+      // معالجة النتيجة
+      final rewards = await processGameResult(
+        playerId: playerId,
+        playerName: player.name,
+        won: won,
+        wasSpy: wasSpy,
+        detectedSpy: detectedSpy,
+        survived: true,
+      );
+
+      log('تم معالجة مكافآت اللاعب $playerId: ${rewards.length} مكافآت');
+    } catch (e) {
+      log('خطأ في التأكد من معالجة المكافآت: $e');
+    }
+  }
+
 }
