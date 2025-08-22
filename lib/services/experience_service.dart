@@ -673,6 +673,133 @@ class ExperienceService {
     }
   }
 
+  // إضافة هذه الدوال الجديدة في ExperienceService
+
+  /// التأكد من وجود اللاعب باستخدام بيانات المستخدم المصادق عليه
+  Future<void> ensurePlayerExistsWithUserData({
+    required String userId,
+    required String email,
+    required String displayName,
+    String? photoUrl,
+  }) async {
+    try {
+      // التحقق من وجود اللاعب في جدول players
+      final existingPlayer = await _client
+          .from('players')
+          .select('id')
+          .eq('id', userId)
+          .maybeSingle();
+
+      final playerData = {
+        'id': userId,
+        'name': displayName,
+        'email': email, // إضافة الإيميل
+        'photo_url': photoUrl, // إضافة الصورة
+        'is_connected': false,
+        'is_voted': false,
+        'votes': 0,
+        'role': 'normal',
+        'room_id': null,
+        'updated_at': DateTime.now().toIso8601String(),
+      };
+
+      if (existingPlayer == null) {
+        // إنشاء سجل جديد
+        playerData['created_at'] = DateTime.now().toIso8601String();
+        await _client.from('players').insert(playerData);
+        log('تم إنشاء سجل اللاعب المصادق عليه: $displayName');
+      } else {
+        // تحديث البيانات الموجودة
+        await _client.from('players')
+            .update(playerData)
+            .eq('id', userId);
+        log('تم تحديث بيانات اللاعب المصادق عليه: $displayName');
+      }
+    } catch (e) {
+      log('خطأ في التأكد من وجود اللاعب المصادق عليه: $e');
+    }
+  }
+
+  /// إنشاء إحصائيات اللاعب مع البيانات الكاملة
+  Future<PlayerStats> createPlayerStatsWithUserData({
+    required String userId,
+    required String email,
+    required String displayName,
+    String? photoUrl,
+  }) async {
+    try {
+      // التأكد من وجود اللاعب أولاً
+      await ensurePlayerExistsWithUserData(
+        userId: userId,
+        email: email,
+        displayName: displayName,
+        photoUrl: photoUrl,
+      );
+
+      // فحص الإحصائيات الموجودة
+      final existingStats = await _client
+          .from('player_stats')
+          .select('*')
+          .eq('player_id', userId)
+          .maybeSingle();
+
+      if (existingStats != null) {
+        // تحديث البيانات الشخصية فقط
+        await _client.from('player_stats').update({
+          'player_name': displayName,
+          'player_email': email,
+          'player_photo_url': photoUrl,
+          'last_updated': DateTime.now().toIso8601String(),
+        }).eq('player_id', userId);
+
+        return PlayerStats.fromJsonWithUserData(existingStats, email, photoUrl);
+      }
+
+      // إنشاء إحصائيات جديدة
+      final newStats = PlayerStats(
+        playerId: userId,
+        playerName: displayName,
+        lastUpdated: DateTime.now(),
+      );
+
+      final statsData = newStats.toJsonWithUserData(email, photoUrl);
+      await _client.from('player_stats').insert(statsData);
+
+      log('تم إنشاء إحصائيات جديدة للمستخدم المصادق عليه: $displayName');
+      return newStats;
+    } catch (e) {
+      log('خطأ في إنشاء إحصائيات المستخدم: $e');
+      return PlayerStats(
+        playerId: userId,
+        playerName: displayName,
+        lastUpdated: DateTime.now(),
+      );
+    }
+  }
+
+  /// معالجة تسجيل الدخول الأولي للمستخدم
+  Future<void> handleUserFirstLogin({
+    required String userId,
+    required String email,
+    required String displayName,
+    String? photoUrl,
+  }) async {
+    try {
+      log('معالجة تسجيل دخول المستخدم: $displayName');
+
+      await createPlayerStatsWithUserData(
+        userId: userId,
+        email: email,
+        displayName: displayName,
+        photoUrl: photoUrl,
+      );
+
+      log('تم إعداد حساب المستخدم بنجاح');
+    } catch (e) {
+      log('خطأ في معالجة تسجيل دخول المستخدم: $e');
+    }
+  }
+
   /// الحصول على أفضل اللاعبين في فئة معينة مع مزامنة الأسماء
   Future<List<LeaderboardEntry>> getTopPlayersByCategory({
     required String category,

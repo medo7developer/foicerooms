@@ -11,53 +11,62 @@ class AuthService {
   UserModel? _currentUser;
   UserModel? get currentUser => _currentUser;
 
-  // --- دالة جديدة للتهيئة ---
+  // --- تهيئة الخدمة ---
   Future<void> initialize() async {
     log('جاري تهيئة خدمة المصادقة...');
-    await GoogleSignIn.instance.initialize();
-    log('تم تهيئة خدمة Google SignIn بنجاح.');
+    await GoogleSignIn.instance.initialize(
+      clientId: null, // Android بيستخدم auto
+      serverClientId:
+      "780961481011-0iam080l7tss375rhkpu2kv2v8i5e0fd.apps.googleusercontent.com", // Web Client ID
+    );
+    log('تم تهيئة GoogleSignIn.');
     await checkAuthStatus();
   }
 
-  // تسجيل الدخول بـ Google (النسخة المصححة)
+  // --- تسجيل الدخول بـ Google ---
   Future<AuthResult> signInWithGoogle() async {
     try {
       log('بدء تسجيل الدخول بـ Google');
-      final GoogleSignInAccount? googleUser = await GoogleSignIn.instance.authenticate();
+
+      final GoogleSignInAccount? googleUser =
+      await GoogleSignIn.instance.authenticate();
       if (googleUser == null) {
         return AuthResult(success: false, message: 'تم إلغاء تسجيل الدخول');
       }
-      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
 
-      // الوصول الصحيح للتوكنات
-      final String? idToken = googleAuth.idToken;
-      // final String? accessToken = googleAuth.accessToken; // <-- التعديل الصحيح هنا
+      // هنا بتطلب serverAuthCode عشان تستخدمه مع Supabase
+      final GoogleSignInServerAuthorization? serverAuth =
+      await googleUser.authorizationClient.authorizeServer(['email', 'profile']);
 
-      if (idToken == null) {
-        log('خطأ: لم يتم استلام ID Token من Google.');
-        return AuthResult(success: false, message: 'فشل في الحصول على معرّف المصادقة من Google.');
+      if (serverAuth == null) {
+        return AuthResult(
+            success: false, message: 'فشل الحصول على Server Auth Code');
       }
 
+      // تسجّل في Supabase باستخدام idToken (أو serverAuthCode)
       final AuthResponse response = await _supabase.auth.signInWithIdToken(
         provider: OAuthProvider.google,
-        idToken: idToken,
-        // accessToken: accessToken,
+        idToken: serverAuth.serverAuthCode,
       );
+
       if (response.user == null) {
-        return AuthResult(success: false, message: 'فشل تسجيل الدخول في Supabase');
+        return AuthResult(
+            success: false, message: 'فشل تسجيل الدخول في Supabase');
       }
+
       final user = await _createOrUpdateUser(response.user!);
       _currentUser = user;
       await _saveUserLocally(user);
+
       log('تم تسجيل الدخول بنجاح: ${user.displayName}');
       return AuthResult(success: true, user: user);
     } catch (e) {
       log('خطأ في تسجيل الدخول بـ Google: $e');
-      return AuthResult(success: false, message: 'خطأ في تسجيل الدخول: $e');
+      return AuthResult(success: false, message: 'خطأ: $e');
     }
   }
 
-  // تسجيل الخروج
+  // --- تسجيل الخروج ---
   Future<void> signOut() async {
     try {
       await _supabase.auth.signOut();
@@ -70,7 +79,7 @@ class AuthService {
     }
   }
 
-  // التحقق من حالة تسجيل الدخول
+  // --- التحقق من حالة المصادقة ---
   Future<bool> checkAuthStatus() async {
     try {
       final session = _supabase.auth.currentSession;

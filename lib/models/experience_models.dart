@@ -17,6 +17,8 @@ enum RewardType {
 class PlayerStats {
   final String playerId;
   final String playerName;  // إضافة حقل الاسم
+  final String? playerEmail;    // إضافة حقل الإيميل
+  final String? playerPhotoUrl; // إضافة حقل الصورة
   final int totalGames;
   final int wins;
   final int losses;
@@ -33,6 +35,8 @@ class PlayerStats {
   PlayerStats({
     required this.playerId,
     this.playerName = 'لاعب مجهول',  // قيمة افتراضية
+    this.playerEmail,           // إضافة للكونستركتر
+    this.playerPhotoUrl,        // إضافة للكونستركتر
     this.totalGames = 0,
     this.wins = 0,
     this.losses = 0,
@@ -63,6 +67,8 @@ class PlayerStats {
   PlayerStats copyWith({
     String? playerId,
     String? playerName,  // إضافة للـ copyWith
+    String? playerEmail,        // إضافة
+    String? playerPhotoUrl,     // إضافة
     int? totalGames,
     int? wins,
     int? losses,
@@ -97,6 +103,28 @@ class PlayerStats {
   Map<String, dynamic> toJson() => {
     'player_id': playerId,
     'player_name': playerName,  // إضافة للـ JSON
+    'player_email': playerEmail,       // إضافة
+    'player_photo_url': playerPhotoUrl, // إضافة
+    'total_games': totalGames,
+    'wins': wins,
+    'losses': losses,
+    'spy_wins': spyWins,
+    'detective_wins': detectiveWins,
+    'times_was_spy': timesWasSpy,
+    'times_detected_spy': timesDetectedSpy,
+    'total_xp': totalXP,
+    'level': level,
+    'badges': badges.map((k, v) => MapEntry(k.name, v)),
+    'titles': titles,
+    'last_updated': lastUpdated.toIso8601String(),
+  };
+
+  // دالة خاصة للJSON مع بيانات المستخدم
+  Map<String, dynamic> toJsonWithUserData(String? email, String? photoUrl) => {
+    'player_id': playerId,
+    'player_name': playerName,
+    'player_email': email,
+    'player_photo_url': photoUrl,
     'total_games': totalGames,
     'wins': wins,
     'losses': losses,
@@ -115,6 +143,8 @@ class PlayerStats {
     return PlayerStats(
       playerId: json['player_id'] ?? '',
       playerName: json['player_name'] ?? 'لاعب مجهول',  // إضافة من JSON
+      playerEmail: json['player_email'],           // إضافة
+      playerPhotoUrl: json['player_photo_url'],    // إضافة
       totalGames: json['total_games'] ?? 0,
       wins: json['wins'] ?? 0,
       losses: json['losses'] ?? 0,
@@ -133,6 +163,37 @@ class PlayerStats {
       lastUpdated: DateTime.parse(json['last_updated']),
     );
   }
+
+  // دالة خاصة للتحويل مع بيانات المستخدم
+  factory PlayerStats.fromJsonWithUserData(
+      Map<String, dynamic> json,
+      String? email,
+      String? photoUrl,
+      ) {
+    return PlayerStats(
+      playerId: json['player_id'] ?? '',
+      playerName: json['player_name'] ?? 'لاعب مجهول',
+      playerEmail: email ?? json['player_email'],
+      playerPhotoUrl: photoUrl ?? json['player_photo_url'],
+      totalGames: json['total_games'] ?? 0,
+      wins: json['wins'] ?? 0,
+      losses: json['losses'] ?? 0,
+      spyWins: json['spy_wins'] ?? 0,
+      detectiveWins: json['detective_wins'] ?? 0,
+      timesWasSpy: json['times_was_spy'] ?? 0,
+      timesDetectedSpy: json['times_detected_spy'] ?? 0,
+      totalXP: json['total_xp'] ?? 0,
+      level: json['level'] ?? 1,
+      badges: (json['badges'] as Map<String, dynamic>? ?? {})
+          .map((k, v) => MapEntry(
+          BadgeType.values.firstWhere((e) => e.name == k),
+          v as int
+      )),
+      titles: List<String>.from(json['titles'] ?? []),
+      lastUpdated: DateTime.parse(json['last_updated']),
+    );
+  }
+
 }
 
 class GameReward {

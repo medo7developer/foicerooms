@@ -2,13 +2,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../models/experience_models.dart';
+import '../providers/user_providers/auth_provider.dart';
 import '../services/experience_service.dart';
 import '../providers/game_provider.dart';
+import '../widgets/user/user_profile_widget.dart';
 
 class StatsScreen extends StatefulWidget {
-  final String playerId;
 
-  const StatsScreen({super.key, required this.playerId});
+  const StatsScreen({super.key});
 
   @override
   State<StatsScreen> createState() => _StatsScreenState();
@@ -38,11 +39,23 @@ class _StatsScreenState extends State<StatsScreen> with TickerProviderStateMixin
   }
 
   Future<void> _loadData() async {
+
+    setState(() => _isLoading = true);
+
     setState(() => _isLoading = true);
 
     try {
-      // تحميل إحصائيات اللاعب
-      _playerStats = await _experienceService.getPlayerStats(widget.playerId);
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+      final playerId = authProvider.playerId;
+
+      if (playerId.isEmpty) {
+        // إعادة توجيه لتسجيل الدخول
+        Navigator.pushReplacementNamed(context, '/login');
+        return;
+      }
+
+      // تحميل إحصائيات اللاعب باستخدام البيانات الجديدة
+      _playerStats = await _experienceService.getPlayerStats(playerId);
 
       // تحميل قوائم المتصدرين
       final results = await Future.wait([
@@ -96,20 +109,28 @@ class _StatsScreenState extends State<StatsScreen> with TickerProviderStateMixin
   Widget _buildHeader() {
     return Container(
       padding: const EdgeInsets.all(20),
-      child: Row(
+      child: Column(
         children: [
-          IconButton(
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.arrow_back, color: Colors.white),
-          ),
-          const SizedBox(width: 10),
-          const Text(
-            'الإحصائيات والمتصدرين',
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: Colors.white,
-            ),
+          // إضافة معلومات المستخدم
+          const UserProfileWidget(showLogoutButton: false),
+          const SizedBox(height: 20),
+
+          Row(
+            children: [
+              IconButton(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.arrow_back, color: Colors.white),
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                'الإحصائيات والمتصدرين',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -402,46 +423,14 @@ class _StatsScreenState extends State<StatsScreen> with TickerProviderStateMixin
     );
   }
 
-  Widget _buildLeaderboardTab(List<LeaderboardEntry> entries, String title) {
-    return Column(
-      children: [
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Colors.purple.shade50,
-            borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(20),
-              topRight: Radius.circular(20),
-            ),
-          ),
-          child: Text(
-            title,
-            style: const TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Colors.purple,
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ),
-        Expanded(
-          child: entries.isEmpty
-              ? const Center(child: Text('لا توجد بيانات متاحة'))
-              : ListView.builder(
-            itemCount: entries.length,
-            itemBuilder: (context, index) {
-              final entry = entries[index];
-              final isCurrentPlayer = entry.playerId == widget.playerId;
-              return _buildLeaderboardItem(entry, isCurrentPlayer);
-            },
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildLeaderboardItem(LeaderboardEntry entry, bool isCurrentPlayer) {
+    // الحصول على AuthProvider للوصول لمعرف المستخدم الحالي
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final currentPlayerId = authProvider.playerId;
+
+    // التحقق إذا كان هذا العنصر للمستخدم الحالي
+    final isCurrentUser = entry.playerId == currentPlayerId;
+
     Color rankColor = Colors.grey;
     if (entry.rank == 1) rankColor = Colors.amber;
     if (entry.rank == 2) rankColor = Colors.grey.shade400;
@@ -451,11 +440,11 @@ class _StatsScreenState extends State<StatsScreen> with TickerProviderStateMixin
       margin: const EdgeInsets.symmetric(horizontal: 15, vertical: 5),
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        color: isCurrentPlayer ? Colors.purple.shade50 : Colors.white,
+        color: isCurrentUser ? Colors.purple.shade50 : Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isCurrentPlayer ? Colors.purple : Colors.grey.shade200,
-          width: isCurrentPlayer ? 2 : 1,
+          color: isCurrentUser ? Colors.purple : Colors.grey.shade200,
+          width: isCurrentUser ? 2 : 1,
         ),
       ),
       child: Row(
@@ -489,10 +478,10 @@ class _StatsScreenState extends State<StatsScreen> with TickerProviderStateMixin
                       style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.bold,
-                        color: isCurrentPlayer ? Colors.purple : Colors.black,
+                        color: isCurrentUser ? Colors.purple : Colors.black,
                       ),
                     ),
-                    if (isCurrentPlayer) ...[
+                    if (isCurrentUser) ...[
                       const SizedBox(width: 8),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
@@ -558,6 +547,49 @@ class _StatsScreenState extends State<StatsScreen> with TickerProviderStateMixin
           ),
         ],
       ),
+    );
+  }
+
+// وتحديث دالة _buildLeaderboardTab:
+  Widget _buildLeaderboardTab(List<LeaderboardEntry> entries, String title) {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+    final currentPlayerId = authProvider.playerId;
+
+    return Column(
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color: Colors.purple.shade50,
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(20),
+              topRight: Radius.circular(20),
+            ),
+          ),
+          child: Text(
+            title,
+            style: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: Colors.purple,
+            ),
+            textAlign: TextAlign.center,
+          ),
+        ),
+        Expanded(
+          child: entries.isEmpty
+              ? const Center(child: Text('لا توجد بيانات متاحة'))
+              : ListView.builder(
+            itemCount: entries.length,
+            itemBuilder: (context, index) {
+              final entry = entries[index];
+              final isCurrentPlayer = entry.playerId == currentPlayerId;
+              return _buildLeaderboardItem(entry, isCurrentPlayer);
+            },
+          ),
+        ),
+      ],
     );
   }
 }

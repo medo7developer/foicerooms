@@ -7,6 +7,7 @@ import 'package:voice_rooms_app/screens/stats_screen.dart';
 import 'dart:developer';
 import '../models/game_room_model.dart';
 import '../providers/game_provider.dart';
+import '../providers/user_providers/auth_provider.dart';
 import '../services/experience_service.dart';
 import '../services/player_service.dart';
 import '../services/supabase_service.dart';
@@ -17,6 +18,7 @@ import '../widgets/home/home_header.dart';
 import '../widgets/home/player_name_section.dart';
 import '../widgets/home/rooms_list_view.dart';
 import '../widgets/home/rooms_tab_section.dart';
+import '../widgets/user/user_profile_widget.dart';
 import 'create_room_screen.dart';
 import 'game_screen.dart';
 import 'online_users_screen.dart';
@@ -76,18 +78,28 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
-  // 3. تعديل دالة _initializeApp لتحديث حالة المستخدم
+// تحديث دالة _initializeApp:
   Future<void> _initializeApp() async {
-    await _loadSavedData();
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
 
-    // تحديث حالة المستخدم كمتصل
-    if (_playerId != null && _nameController.text.trim().isNotEmpty) {
+    // استخدام بيانات المستخدم المصادق عليه
+    _playerId = authProvider.playerId;
+
+    if (_playerId != null && authProvider.playerName.isNotEmpty) {
+      // تحديث الخدمات لاستخدام البيانات الجديدة
+      final experienceService = Provider.of<ExperienceService>(context, listen: false);
+      await experienceService.handleUserFirstLogin(
+        userId: authProvider.playerId,
+        email: authProvider.playerEmail,
+        displayName: authProvider.playerName,
+        photoUrl: authProvider.playerImageUrl,
+      );
+
       await _onlineUsersService.updateUserStatus(
         _playerId!,
-        _nameController.text.trim(),
+        authProvider.playerName,
         true,
       );
-      await _initializePlayerStats();
     }
 
     await _checkUserStatus();
@@ -211,6 +223,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 // تحسين دالة _joinRoom
   Future<void> _joinRoom(GameRoom room) async {
+
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    if (!authProvider.isAuthenticated) {
+      _showSnackBar('يجب تسجيل الدخول أولاً', isError: true);
+      return;
+    }
+
 // التحقق من صحة البيانات
     if (_nameController.text.trim().isEmpty) {
       _showSnackBar('يرجى إدخال اسمك أولاً', isError: true);
@@ -726,16 +746,20 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                   onRejoinRoom: _rejoinRoom,
                 ),
 
-              PlayerNameSection(
-                controller: _nameController,
-                savedPlayerName: _savedPlayerName,
-                isInRoom: _currentUserStatus?.inRoom == true,
-                onNameChanged: (value) {
-                  if (value.isNotEmpty && _currentUserStatus?.inRoom != true) {
-                    _savePlayerName(value);
-                  }
-                },
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                child: UserProfileWidget(
+                  showLogoutButton: true,
+                  onLogout: () {
+                    // تنظيف أي بيانات محلية أخرى
+                    _currentUserStatus = null;
+                    _availableRooms.clear();
+                    _myRooms.clear();
+                    setState(() {});
+                  },
+                ),
               ),
+
               RoomsTabSection(
                 tabController: _tabController,
                 availableRoomsCount: _availableRooms.length,
@@ -789,7 +813,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => StatsScreen(playerId: _playerId!),
+                        builder: (context) => StatsScreen(),
                       ),
                     );
                   }

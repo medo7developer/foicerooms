@@ -3,6 +3,9 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:provider/provider.dart';
+import 'package:voice_rooms_app/providers/user_providers/auth_provider.dart';
+import 'package:voice_rooms_app/screens/login_screen.dart';
+import 'package:voice_rooms_app/screens/profile_setup_screen.dart';
 import 'package:voice_rooms_app/services/experience_service.dart';
 import 'services/supabase_service.dart';
 import 'services/webrtc_services/webrtc_service.dart';
@@ -33,41 +36,77 @@ class VoiceRoomsApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        // إضافة AuthProvider في المقدمة
+        ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => GameProvider()),
         Provider(create: (_) => SupabaseService()),
         Provider(create: (_) => ExperienceService()),
         Provider(create: (_) => WebRTCService()),
         Provider(create: (_) => RealtimeManager()),
       ],
-      child: MaterialApp(
-        title: 'غرف صوتية تفاعلية',
-        debugShowCheckedModeBanner: false,
-        // إضافة navigatorKey للوصول للـ context من خارج Widget
-        navigatorKey: navigatorKey,
-        theme: ThemeData(
-          primarySwatch: Colors.purple,
-          fontFamily: 'Arial',
-          textTheme: const TextTheme(
-            bodyLarge: TextStyle(fontSize: 16),
-            bodyMedium: TextStyle(fontSize: 14),
-            titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-          elevatedButtonTheme: ElevatedButtonThemeData(
-            style: ElevatedButton.styleFrom(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+      child: Consumer<AuthProvider>(
+        builder: (context, authProvider, child) {
+          return MaterialApp(
+            title: 'غرف صوتية تفاعلية',
+            debugShowCheckedModeBanner: false,
+            navigatorKey: navigatorKey,
+            theme: ThemeData(
+              primarySwatch: Colors.purple,
+              fontFamily: 'Arial',
+              textTheme: const TextTheme(
+                bodyLarge: TextStyle(fontSize: 16),
+                bodyMedium: TextStyle(fontSize: 14),
+                titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+              ),
+              elevatedButtonTheme: ElevatedButtonThemeData(
+                style: ElevatedButton.styleFrom(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
+              cardTheme: CardTheme(
+                elevation: 4,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(15),
+                ),
               ),
             ),
-          ),
-          cardTheme: CardTheme(
-            elevation: 4,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(15),
-            ),
-          ),
-        ),
-        home: const HomeScreen(),
+            // إضافة نظام التوجيه الجديد
+            routes: {
+              '/': (context) => _getInitialScreen(authProvider),
+              '/login': (context) => const LoginScreen(),
+              '/profile-setup': (context) => const ProfileSetupScreen(),
+              '/home': (context) => const HomeScreen(),
+            },
+            initialRoute: '/',
+          );
+        },
       ),
     );
   }
+
+
+  // تحديد الشاشة الأولية بناءً على حالة المصادقة
+  Widget _getInitialScreen(AuthProvider authProvider) {
+    if (authProvider.isLoading) {
+      return const Scaffold(
+        body: Center(
+          child: CircularProgressIndicator(),
+        ),
+      );
+    }
+
+    if (!authProvider.isAuthenticated) {
+      return const LoginScreen();
+    }
+
+    if (!authProvider.isProfileComplete) {
+      return const ProfileSetupScreen();
+    }
+
+    return const HomeScreen();
+  }
 }
+
+
