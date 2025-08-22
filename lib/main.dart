@@ -1,4 +1,4 @@
-// lib/main.dart - تعديلات الدمج
+// lib/main.dart - تعديلات الدمج مع Supabase Google Auth
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -86,27 +86,29 @@ class VoiceRoomsApp extends StatelessWidget {
     );
   }
 
-
   // تحديد الشاشة الأولية بناءً على حالة المصادقة
   Widget _getInitialScreen(AuthProvider authProvider) {
-    if (authProvider.isLoading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
+    return StreamBuilder<AuthState>(
+      stream: Supabase.instance.client.auth.onAuthStateChange,
+      builder: (context, snapshot) {
+        if (authProvider.isLoading) {
+          return const Scaffold(
+            body: Center(
+              child: CircularProgressIndicator(),
+            ),
+          );
+        }
 
-    if (!authProvider.isAuthenticated) {
-      return const LoginScreen();
-    }
+        if (!authProvider.isAuthenticated) {
+          return const LoginScreen();
+        }
 
-    if (!authProvider.isProfileComplete) {
-      return const ProfileSetupScreen();
-    }
+        if (!authProvider.isProfileComplete) {
+          return const ProfileSetupScreen();
+        }
 
-    return const HomeScreen();
+        return const HomeScreen();
+      },
+    );
   }
 }
-
-
