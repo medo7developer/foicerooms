@@ -21,6 +21,7 @@ mixin GameScreenMixin {
       String playerId,
       BuildContext gameContext,
       ) {
+    log('🔧 بدء تعيين WebRTC callbacks للاعب: $playerId');
 
     // إلغاء الاستماع السابق إذا كان موجوداً
     _signalSubscription?.cancel();
@@ -28,10 +29,10 @@ mixin GameScreenMixin {
     webrtcService.setSignalingCallbacks(
       onIceCandidate: (peerId, candidate) async {
         try {
+          log('🧊 إرسال ICE candidate إلى $peerId'); // إضافة log مهم
+
           final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
-            log('🧊 إرسال ICE candidate إلى $peerId');
-
             final success = await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
               fromPeer: playerId,
@@ -50,6 +51,7 @@ mixin GameScreenMixin {
               log('❌ فشل إرسال ICE candidate إلى $peerId');
               // إعادة المحاولة بعد تأخير قصير
               Future.delayed(const Duration(milliseconds: 500), () async {
+                log('🔄 إعادة محاولة إرسال ICE candidate إلى $peerId');
                 await supabaseService.sendSignal(
                   roomId: gameProvider.currentRoom!.id,
                   fromPeer: playerId,
@@ -63,6 +65,8 @@ mixin GameScreenMixin {
                 );
               });
             }
+          } else {
+            log('❌ لا توجد غرفة حالية لإرسال ICE candidate');
           }
         } catch (e) {
           log('❌ خطأ في إرسال ICE candidate: $e');
@@ -71,10 +75,10 @@ mixin GameScreenMixin {
 
       onOffer: (peerId, offer) async {
         try {
+          log('📤 إرسال offer إلى $peerId'); // إضافة log مهم
+
           final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
-            log('📤 إرسال offer إلى $peerId');
-
             final success = await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
               fromPeer: playerId,
@@ -90,7 +94,23 @@ mixin GameScreenMixin {
               log('✅ تم إرسال offer بنجاح إلى $peerId');
             } else {
               log('❌ فشل إرسال offer إلى $peerId');
+              // إعادة المحاولة
+              Future.delayed(const Duration(seconds: 1), () async {
+                log('🔄 إعادة محاولة إرسال offer إلى $peerId');
+                await supabaseService.sendSignal(
+                  roomId: gameProvider.currentRoom!.id,
+                  fromPeer: playerId,
+                  toPeer: peerId,
+                  type: 'offer',
+                  data: {
+                    'sdp': offer.sdp,
+                    'type': offer.type,
+                  },
+                );
+              });
             }
+          } else {
+            log('❌ لا توجد غرفة حالية لإرسال offer');
           }
         } catch (e) {
           log('❌ خطأ في إرسال العرض: $e');
@@ -99,10 +119,10 @@ mixin GameScreenMixin {
 
       onAnswer: (peerId, answer) async {
         try {
+          log('📤 إرسال answer إلى $peerId'); // إضافة log مهم
+
           final gameProvider = Provider.of<GameProvider>(gameContext, listen: false);
           if (gameProvider.currentRoom != null) {
-            log('📤 إرسال answer إلى $peerId');
-
             final success = await supabaseService.sendSignal(
               roomId: gameProvider.currentRoom!.id,
               fromPeer: playerId,
@@ -118,13 +138,31 @@ mixin GameScreenMixin {
               log('✅ تم إرسال answer بنجاح إلى $peerId');
             } else {
               log('❌ فشل إرسال answer إلى $peerId');
+              // إعادة المحاولة
+              Future.delayed(const Duration(seconds: 1), () async {
+                log('🔄 إعادة محاولة إرسال answer إلى $peerId');
+                await supabaseService.sendSignal(
+                  roomId: gameProvider.currentRoom!.id,
+                  fromPeer: playerId,
+                  toPeer: peerId,
+                  type: 'answer',
+                  data: {
+                    'sdp': answer.sdp,
+                    'type': answer.type,
+                  },
+                );
+              });
             }
+          } else {
+            log('❌ لا توجد غرفة حالية لإرسال answer');
           }
         } catch (e) {
           log('❌ خطأ في إرسال الإجابة: $e');
         }
       },
     );
+
+    log('✅ تم تعيين WebRTC callbacks بنجاح');
 
     // بدء الاستماع المحسن للإشارات
     _startEnhancedSignalListening(webrtcService, supabaseService, playerId, gameContext);

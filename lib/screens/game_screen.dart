@@ -161,6 +161,11 @@ class _GameScreenState extends State<GameScreen>
         );
       }
     }
+    Future.delayed(const Duration(seconds: 20), () async {
+      if (mounted) {
+        await _testWebRTCCallbacks();
+      }
+    });
   }
 
   void _setupGameEndListener(GameProvider gameProvider, ExperienceService experienceService) {
@@ -202,7 +207,6 @@ class _GameScreenState extends State<GameScreen>
     }
   }
 
-// تعديل _connectToOtherPlayersEnhanced
   Future<void> _connectToOtherPlayersEnhanced(List<Player> players) async {
     if (_hasConnectedToPeers) return;
 
@@ -218,6 +222,11 @@ class _GameScreenState extends State<GameScreen>
 
       log('🚀 بدء الاتصال المحسن بـ ${connectedPlayers.length} لاعبين');
 
+      // **المشكلة هنا: تم تعيين callbacks لكن لم يتم استخدامها!**
+      // إعادة تعيين callbacks قبل بدء الاتصالات
+      log('🔧 إعادة تعيين WebRTC callbacks...');
+      setupWebRTCCallbacks(_webrtcService, _supabaseService, widget.playerId, context);
+
       // **تنظيف أي اتصالات سابقة أولاً**
       for (final player in connectedPlayers) {
         if (_webrtcService.hasPeer(player.id)) {
@@ -227,22 +236,24 @@ class _GameScreenState extends State<GameScreen>
         }
       }
 
-      // إنشاء جميع peer connections جديدة
+      // **إنشاء جميع peer connections جديدة مع انتظار أطول**
       for (final player in connectedPlayers) {
         try {
           log('🔧 إنشاء peer connection جديد مع ${player.name}');
           await _webrtcService.createPeerConnectionForPeer(player.id);
-          await Future.delayed(const Duration(milliseconds: 500));
+
+          // انتظار أطول لضمان الاستقرار
+          await Future.delayed(const Duration(milliseconds: 1000));
           log('✅ تم إنشاء peer connection مع ${player.id}');
         } catch (e) {
           log('❌ خطأ في إنشاء peer connection مع ${player.id}: $e');
         }
       }
 
-      // انتظار استقرار الاتصالات
-      await Future.delayed(const Duration(seconds: 2));
+      // **انتظار استقرار الاتصالات - زيادة الوقت**
+      await Future.delayed(const Duration(seconds: 3));
 
-      // إرسال offers واحد تلو الآخر
+      // **إرسال offers واحد تلو الآخر مع تحقق**
       for (int i = 0; i < connectedPlayers.length; i++) {
         final player = connectedPlayers[i];
 
@@ -250,12 +261,16 @@ class _GameScreenState extends State<GameScreen>
           log('📤 إنشاء offer لـ ${player.name} (${i + 1}/${connectedPlayers.length})');
 
           if (_webrtcService.hasPeer(player.id)) {
+            // **التحقق من حالة الـ peer قبل الإرسال**
+            final isHealthy = await _webrtcService.isPeerConnectionHealthy(player.id);
+            log('🔍 حالة الـ peer ${player.id}: $isHealthy');
+
             await _webrtcService.createOffer(player.id);
             log('✅ تم إرسال offer إلى ${player.id}');
 
-            // انتظار بين العروض
+            // انتظار أطول بين العروض
             if (i < connectedPlayers.length - 1) {
-              await Future.delayed(const Duration(seconds: 3));
+              await Future.delayed(const Duration(seconds: 4)); // زيادة الانتظار
             }
           }
 
@@ -271,6 +286,7 @@ class _GameScreenState extends State<GameScreen>
       log('❌ خطأ عام في الاتصال: $e');
     }
   }
+
 // دالة تشخيص مفصلة جديدة
   Future<void> _performDetailedDiagnostics() async {
     try {
@@ -550,6 +566,43 @@ class _GameScreenState extends State<GameScreen>
         ),
       ],
     );
+  }
+
+  Future<void> _testWebRTCCallbacks() async {
+    log('🧪 === اختبار WebRTC Callbacks ===');
+
+    // التحقق من أن الـ callbacks تم تعيينها
+    final hasCallbacks = _webrtcService.hasCallbacks; // ستحتاج إضافة هذا getter
+    log('📞 Callbacks معينة: $hasCallbacks');
+
+    // اختبار الإشارات
+    final gameProvider = context.read<GameProvider>();
+    if (gameProvider.currentRoom != null) {
+      final room = gameProvider.currentRoom!;
+      final otherPlayers = room.players.where((p) => p.id != widget.playerId && p.isConnected).toList();
+
+      log('👥 لاعبين آخرين متصلين: ${otherPlayers.length}');
+
+      for (final player in otherPlayers) {
+        log('🔍 فحص اتصال مع ${player.name} (${player.id})');
+
+        // التحقق من وجود peer connection
+        final hasPeer = _webrtcService.hasPeer(player.id);
+        log('   📡 Has Peer: $hasPeer');
+
+        if (hasPeer) {
+          // التحقق من صحة الاتصال
+          final isHealthy = await _webrtcService.isPeerConnectionHealthy(player.id);
+          log('   💚 Is Healthy: $isHealthy');
+
+          // التحقق من وجود مسارات
+          final hasRemoteStream = _webrtcService.getRemoteStream(player.id) != null;
+          log('   🎵 Has Remote Stream: $hasRemoteStream');
+        }
+      }
+    }
+
+    log('🧪 === انتهاء اختبار Callbacks ===');
   }
 
   @override

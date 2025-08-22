@@ -20,6 +20,8 @@ class WebRTCService {
   final Map<String, bool> _connectionInProgress = {};
   final Map<String, DateTime> _lastConnectionAttempt = {};
 
+  bool get hasCallbacks => _signalingCallbacks.hasAllCallbacks;
+
   WebRTCService() {
     _connectionManager = WebRTCConnectionManager(
       peers: _peers,
