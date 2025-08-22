@@ -69,14 +69,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     super.dispose();
   }
 
-// تعديل دالة _initializeApp:
   Future<void> _initializeApp() async {
     await _loadSavedData();
+
+    // التأكد من وجود معرف اللاعب واسمه قبل تهيئة الإحصائيات
+    if (_playerId != null && _nameController.text.trim().isNotEmpty) {
+      await _initializePlayerStats();
+    }
+
     await _checkUserStatus();
-
-    // إضافة تهيئة الإحصائيات هنا
-    await _initializePlayerStats();
-
     await _loadAvailableRooms();
   }
 
@@ -420,48 +421,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
-// إضافة هذه الدالة الجديدة:
-// تعديل _initializePlayerStats
   Future<void> _initializePlayerStats() async {
     if (_playerId == null || _nameController.text.trim().isEmpty) return;
 
     try {
       final experienceService = ExperienceService();
 
-      // فحص الإحصائيات الموجودة أولاً
-      final existingStats = await experienceService.getPlayerStats(_playerId!);
+      // استخدام الدالة الجديدة للتأكد من الإحصائيات مع الاسم
+      await experienceService.ensurePlayerStatsWithName(
+        _playerId!,
+        _nameController.text.trim(),
+      );
 
-      if (existingStats == null) {
-        // إنشاء إحصائيات جديدة فقط إذا لم تكن موجودة
-        await experienceService.initializePlayerStatsOnStart(
-          _playerId!,
-          _nameController.text.trim(),
-        );
-        log('تم إنشاء إحصائيات جديدة للاعب');
-      } else {
-        // تحديث الاسم فقط
-        await experienceService.updatePlayerName(_playerId!, _nameController.text.trim());
-        log('تم تحديث اسم اللاعب في الإحصائيات الموجودة');
-      }
+      log('تم تهيئة إحصائيات اللاعب بنجاح');
     } catch (e) {
       log('خطأ في تهيئة إحصائيات اللاعب: $e');
     }
   }
 
-// تعديل دالة _savePlayerName لتحديث الإحصائيات أيضاً:
   Future<void> _savePlayerName(String name) async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('player_name', name);
       setState(() => _savedPlayerName = name);
 
-      // تحديث/إنشاء الإحصائيات مع الاسم الجديد
+      // تحديث/إنشاء الإحصائيات فوراً مع الاسم الجديد
       if (_playerId != null) {
         final experienceService = ExperienceService();
-        await experienceService.initializePlayerStatsOnStart(_playerId!, name);
+        await experienceService.ensurePlayerStatsWithName(_playerId!, name);
+        log('تم حفظ اسم اللاعب وتحديث الإحصائيات: $name');
       }
-
-      log('تم حفظ اسم اللاعب وتحديث الإحصائيات: $name');
     } catch (e) {
       log('خطأ في حفظ اسم اللاعب: $e');
     }

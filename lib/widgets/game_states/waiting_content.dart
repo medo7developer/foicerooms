@@ -268,7 +268,7 @@ class _WaitingContentState extends State<WaitingContent> {
                         child: Text(
                           _hasEnoughPlayers
                               ? '✓ العدد كافي لبدء اللعبة'
-                              : 'نحتاج {3 - _connectedPlayersCount} لاعبين إضافيين على الأقل',
+                              : 'نحتاج {3} لاعبين على الأقل',
                           key: ValueKey(_hasEnoughPlayers),
                           style: TextStyle(
                             color: _hasEnoughPlayers ? Colors.green : Colors.orange,

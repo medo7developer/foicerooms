@@ -41,7 +41,7 @@ class ExperienceService {
     }
   }
 
-  /// الحصول على إحصائيات اللاعب
+  /// الحصول على إحصائيات اللاعب مع ضمان الاسم الصحيح
   Future<PlayerStats?> getPlayerStats(String playerId, {String? playerName}) async {
     try {
       final response = await _client
@@ -51,11 +51,30 @@ class ExperienceService {
           .maybeSingle();
 
       if (response == null) {
-        // إنشاء إحصائيات جديدة للاعب
-        return await _createNewPlayerStats(playerId, playerName ?? 'لاعب مجهول');
+        // لا توجد إحصائيات، إرجاع null بدلاً من إنشاء جديدة
+        return null;
       }
 
-      return PlayerStats.fromJson(response);
+      final stats = PlayerStats.fromJson(response);
+
+      // إذا تم تمرير اسم وهو مختلف عن المحفوظ، قم بتحديثه
+      if (playerName != null &&
+          playerName.isNotEmpty &&
+          playerName != 'لاعب مجهول' &&
+          stats.playerName != playerName) {
+
+        await _client
+            .from('player_stats')
+            .update({
+          'player_name': playerName,
+          'last_updated': DateTime.now().toIso8601String(),
+        })
+            .eq('player_id', playerId);
+
+        return stats.copyWith(playerName: playerName);
+      }
+
+      return stats;
     } catch (e) {
       log('خطأ في جلب إحصائيات اللاعب: $e');
       return null;
@@ -366,34 +385,174 @@ class ExperienceService {
     }
   }
 
-// تحديث initializePlayerStatsOnStart
+  /// التأكد من وجود الإحصائيات مع الاسم الصحيح
+  Future<PlayerStats> ensurePlayerStatsWithName(String playerId, String playerName) async {
+    try {
+      // البحث عن الإحصائيات الموجودة
+      final existingStats = await _client
+          .from('player_stats')
+          .select('*')
+          .eq('player_id', playerId)
+          .maybeSingle();
+
+      if (existingStats != null) {
+        // الإحصائيات موجودة، تحديث الاسم إذا كان مختلف
+        final currentName = existingStats['player_name'] ?? 'لاعب مجهول';
+
+        if (currentName != playerName) {
+          await _client
+              .from('player_stats')
+              .update({
+            'player_name': playerName,
+            'last_updated': DateTime.now().toIso8601String(),
+          })
+              .eq('player_id', playerId);
+
+          log('تم تحديث اسم اللاعب في الإحصائيات: $playerId -> $playerName');
+        }
+
+        // إرجاع الإحصائيات مع الاسم المحدث
+        return PlayerStats.fromJson({
+          ...existingStats,
+          'player_name': playerName,
+        });
+      } else {
+        // إنشاء إحصائيات جديدة مع الاسم
+        return await _createNewPlayerStatsWithName(playerId, playerName);
+      }
+    } catch (e) {
+      log('خطأ في التأكد من إحصائيات اللاعب: $e');
+      // إرجاع إحصائيات افتراضية مع الاسم
+      return PlayerStats(
+        playerId: playerId,
+        playerName: playerName,
+        lastUpdated: DateTime.now(),
+      );
+    }
+  }
+
+  /// إنشاء إحصائيات جديدة مع الاسم
+  Future<PlayerStats> _createNewPlayerStatsWithName(String playerId, String playerName) async {
+    try {
+      // التأكد من وجود اللاعب في جدول players أولاً
+      await _ensurePlayerExists(playerId, playerName);
+
+      // فحص مرة أخيرة قبل الإنشاء لتجنب التضارب
+      final existingCheck = await _client
+          .from('player_stats')
+          .select('player_id')
+          .eq('player_id', playerId)
+          .maybeSingle();
+
+      if (existingCheck != null) {
+        // الإحصائيات موجودة، تحديث الاسم فقط
+        await _client
+            .from('player_stats')
+            .update({
+          'player_name': playerName,
+          'last_updated': DateTime.now().toIso8601String(),
+        })
+            .eq('player_id', playerId);
+
+        return (await getPlayerStats(playerId))!;
+      }
+
+      // إنشاء إحصائيات جديدة
+      final newStats = PlayerStats(
+        playerId: playerId,
+        playerName: playerName, // استخدام الاسم المرسل
+        lastUpdated: DateTime.now(),
+      );
+
+      await _client.from('player_stats').insert(newStats.toJson());
+      log('تم إنشاء إحصائيات جديدة للاعب: $playerId باسم: $playerName');
+
+      return newStats;
+    } catch (e) {
+      log('خطأ في إنشاء إحصائيات اللاعب: $e');
+
+      // إرجاع إحصائيات افتراضية بدلاً من الفشل
+      return PlayerStats(
+        playerId: playerId,
+        playerName: playerName,
+        lastUpdated: DateTime.now(),
+      );
+    }
+  }
+
+  /// تهيئة إحصائيات اللاعب عند بدء التطبيق (محسنة)
   Future<void> initializePlayerStatsOnStart(String playerId, String playerName) async {
     try {
-      // فحص الإحصائيات الموجودة أولاً
-      final existingStats = await _client
+      // استخدام الدالة الجديدة المحسنة
+      await ensurePlayerStatsWithName(playerId, playerName);
+      log('تم تهيئة إحصائيات اللاعب عند بدء التطبيق: $playerId');
+    } catch (e) {
+      log('خطأ في تهيئة إحصائيات اللاعب عند البدء: $e');
+    }
+  }
+
+  /// التحقق من تكامل بيانات اللاعب وإصلاحها
+  Future<bool> validateAndFixPlayerData(String playerId, String playerName) async {
+    try {
+      // فحص جدول players
+      final playerData = await _client
+          .from('players')
+          .select('id, name')
+          .eq('id', playerId)
+          .maybeSingle();
+
+      // فحص جدول player_stats
+      final statsData = await _client
           .from('player_stats')
           .select('player_id, player_name')
           .eq('player_id', playerId)
           .maybeSingle();
 
-      if (existingStats == null) {
-        // إنشاء إحصائيات جديدة فقط إذا لم تكن موجودة
-        await _createNewPlayerStats(playerId, playerName);
-        log('تم إنشاء إحصائيات جديدة للاعب عند بدء التطبيق: $playerId');
-      } else {
-        // تحديث الاسم فقط إذا تغير
-        if (existingStats['player_name'] != playerName) {
-          await _client
-              .from('player_stats')
-              .update({'player_name': playerName})
-              .eq('player_id', playerId);
-          log('تم تحديث اسم اللاعب الموجود: $playerId -> $playerName');
-        } else {
-          log('إحصائيات اللاعب موجودة ومحدثة: $playerId');
-        }
+      bool needsFix = false;
+
+      // إصلاح جدول players إذا لزم الأمر
+      if (playerData == null) {
+        await _client.from('players').upsert({
+          'id': playerId,
+          'name': playerName,
+          'is_connected': false,
+          'is_voted': false,
+          'votes': 0,
+          'role': 'normal',
+          'room_id': null,
+        });
+        needsFix = true;
+        log('تم إصلاح بيانات اللاعب في جدول players');
+      } else if (playerData['name'] != playerName) {
+        await _client.from('players')
+            .update({'name': playerName})
+            .eq('id', playerId);
+        needsFix = true;
       }
+
+      // إصلاح جدول player_stats إذا لزم الأمر
+      if (statsData == null) {
+        await _createNewPlayerStatsWithName(playerId, playerName);
+        needsFix = true;
+        log('تم إصلاح بيانات اللاعب في جدول player_stats');
+      } else if (statsData['player_name'] != playerName) {
+        await _client.from('player_stats')
+            .update({
+          'player_name': playerName,
+          'last_updated': DateTime.now().toIso8601String(),
+        })
+            .eq('player_id', playerId);
+        needsFix = true;
+      }
+
+      if (needsFix) {
+        log('تم إصلاح بيانات اللاعب: $playerId');
+      }
+
+      return true;
     } catch (e) {
-      log('خطأ في تهيئة إحصائيات اللاعب عند البدء: $e');
+      log('خطأ في التحقق من تكامل بيانات اللاعب: $e');
+      return false;
     }
   }
 
