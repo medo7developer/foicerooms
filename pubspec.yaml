@@ -20,6 +20,8 @@ dependencies:
   # Supabase
   supabase_flutter:
 
+  google_sign_in:
+
   # إدارة الحالة
   provider:
 

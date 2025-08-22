@@ -173,7 +173,7 @@ class SupabaseService {
 
   // ===== خدمات WebRTC Signaling =====
 
-  /// إرسال إشارة
+  /// إرسال إشارة WebRTC
   Future<bool> sendSignal({
     required String roomId,
     required String fromPeer,
@@ -181,13 +181,45 @@ class SupabaseService {
     required String type,
     required Map<String, dynamic> data,
   }) async {
-    return await _signalingService.sendSignal(
-      roomId: roomId,
-      fromPeer: fromPeer,
-      toPeer: toPeer,
-      type: type,
-      data: data,
-    );
+    try {
+      final signalingService = SignalingService();
+      return await signalingService.sendSignal(
+        roomId: roomId,
+        fromPeer: fromPeer,
+        toPeer: toPeer,
+        type: type,
+        data: data,
+      );
+    } catch (e) {
+      log('خطأ في إرسال الإشارة: $e');
+      return false;
+    }
+  }
+
+  /// الاستماع للإشارات مع fallback
+  Stream<Map<String, dynamic>> listenToSignalsWithFallback(String playerId) {
+    final signalingService = SignalingService();
+    return signalingService.listenToSignalsWithFallback(playerId);
+  }
+
+  /// حذف إشارة بأمان
+  Future<void> deleteSignalSafe(dynamic signalId, String? playerId) async {
+    try {
+      final signalingService = SignalingService();
+      await signalingService.deleteSignalSafe(signalId, playerId);
+    } catch (e) {
+      log('خطأ في حذف الإشارة: $e');
+    }
+  }
+
+  /// تنظيف الإشارات القديمة
+  Future<void> cleanupOldSignals(String roomId) async {
+    try {
+      final signalingService = SignalingService();
+      await signalingService.cleanupOldSignals(roomId);
+    } catch (e) {
+      log('خطأ في تنظيف الإشارات: $e');
+    }
   }
 
   /// الاستماع للإشارات
@@ -195,24 +227,9 @@ class SupabaseService {
     return _signalingService.listenToSignals(peerId);
   }
 
-  /// الاستماع للإشارات مع حل بديل
-  Stream<Map<String, dynamic>> listenToSignalsWithFallback(String playerId) {
-    return _signalingService.listenToSignalsWithFallback(playerId);
-  }
-
   /// حذف إشارة
   Future<void> deleteSignal(int signalId) async {
     return await _signalingService.deleteSignal(signalId);
-  }
-
-  /// حذف إشارة بأمان
-  Future<void> deleteSignalSafe(dynamic signalId, String? playerId) async {
-    return await _signalingService.deleteSignalSafe(signalId, playerId);
-  }
-
-  /// تنظيف الإشارات القديمة
-  Future<void> cleanupOldSignals(String roomId) async {
-    return await _signalingService.cleanupOldSignals(roomId);
   }
 
   /// تنظيف الإشارة المستلمة

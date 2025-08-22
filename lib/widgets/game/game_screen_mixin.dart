@@ -345,14 +345,23 @@ mixin GameScreenMixin {
     }
   }
 
+// وفي دالة _startSignalCleanupTimer، استبدل:
   void _startSignalCleanupTimer() {
     _signalCleanupTimer?.cancel();
     _signalCleanupTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
       // تنظيف دوري للإشارات القديمة
-      final gameProvider = Provider.of<GameProvider>(NavigationService.navigatorKey.currentContext!, listen: false);
-      if (gameProvider.currentRoom != null) {
-        final supabaseService = SupabaseService();
-        supabaseService.cleanupOldSignals(gameProvider.currentRoom!.id);
+      try {
+        // استخدام context محفوظ بدلاً من NavigationService
+        final context = NavigationService.currentContext;
+        if (context != null) {
+          final gameProvider = Provider.of<GameProvider>(context, listen: false);
+          if (gameProvider.currentRoom != null) {
+            final supabaseService = SupabaseService();
+            supabaseService.cleanupOldSignals(gameProvider.currentRoom!.id);
+          }
+        }
+      } catch (e) {
+        log('خطأ في تنظيف الإشارات: $e');
       }
     });
   }
@@ -418,7 +427,10 @@ mixin GameScreenMixin {
   }
 }
 
-// خدمة للوصول لـ context من أي مكان
+// في نهاية الكلاس NavigationService، أضف:
 class NavigationService {
   static GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+  // إضافة هذا الجزء المفقود:
+  static BuildContext? get currentContext => navigatorKey.currentContext;
 }

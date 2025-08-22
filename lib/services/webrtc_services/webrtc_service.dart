@@ -138,7 +138,6 @@ class WebRTCService {
   }
 
   // دالة محسنة لإنشاء peer connection مع حماية من التكرار
-  @override
   Future<RTCPeerConnection> createPeerConnectionForPeer(String peerId) async {
     // التحقق من وجود اتصال في التقدم
     if (_connectionInProgress[peerId] == true) {
@@ -370,8 +369,7 @@ class WebRTCService {
     }
   }
 
-  // تنظيف محسن
-  @override
+  // 2. إضافة دالة مفقودة في نهاية الكلاس:
   Future<void> dispose() async {
     try {
       log('🧹 بدء تنظيف موارد WebRTC');

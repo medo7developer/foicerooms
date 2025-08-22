@@ -71,7 +71,8 @@ class _GameScreenState extends State<GameScreen>
     );
   }
 
-// في _initializeGame() في GameScreen
+// التعديل المطلوب في game_screen.dart - استبدال دالة _initializeGame:
+
   Future<void> _initializeGame() async {
     if (!mounted) return;
 
@@ -86,12 +87,12 @@ class _GameScreenState extends State<GameScreen>
 
       // 2. تهيئة الصوت المحلي مع انتظار كافي
       await _webrtcService.initializeLocalAudio();
-      await Future.delayed(const Duration(milliseconds: 800));
+      await Future.delayed(const Duration(milliseconds: 1000)); // زيادة وقت الانتظار
       log('✅ تم تهيئة الصوت المحلي');
 
       if (!mounted) return;
 
-      // 3. إعداد الخدمات - تصحيح هنا
+      // 3. إعداد الخدمات
       final gameProvider = context.read<GameProvider>();
       gameProvider.setSupabaseService(_supabaseService);
 
@@ -102,7 +103,7 @@ class _GameScreenState extends State<GameScreen>
 
       _realtimeManager.registerGameProvider(gameProvider);
 
-      // 4. إعداد WebRTC callbacks مع الدوال المحسنة
+      // 4. إعداد WebRTC callbacks مع الدوال المحسنة - هنا المشكلة الأساسية!
       setupWebRTCCallbacks(_webrtcService, _supabaseService, widget.playerId, context);
       log('✅ تم إعداد WebRTC callbacks المحسنة');
 
@@ -116,11 +117,20 @@ class _GameScreenState extends State<GameScreen>
         // 6. تحديث البيانات
         await _realtimeManager.forceRefresh();
 
-        // 7. انتظار ثم بدء الاتصالات الصوتية
-        await Future.delayed(const Duration(seconds: 2));
+        // 7. انتظار أطول قبل بدء الاتصالات الصوتية
+        await Future.delayed(const Duration(seconds: 3)); // زيادة وقت الانتظار
 
-        if (currentRoom.players.length > 1) {
+        // التأكد من وجود لاعبين آخرين
+        final connectedPlayers = currentRoom.players
+            .where((p) => p.isConnected && p.id != widget.playerId)
+            .toList();
+
+        log('🔍 عدد اللاعبين المتصلين: ${connectedPlayers.length}');
+
+        if (connectedPlayers.isNotEmpty) {
           await _connectToOtherPlayersEnhanced(currentRoom.players);
+        } else {
+          log('⚠️ لا يوجد لاعبين آخرين للاتصال بهم');
         }
       }
 
@@ -132,7 +142,7 @@ class _GameScreenState extends State<GameScreen>
       // 9. بدء فحص الصحة الدوري لـ WebRTC
       _webrtcService.startConnectionHealthCheck();
 
-      // 10. تشخيص نهائي بعد فترة
+      // 10. تشخيص نهائي بعد فترة أطول
       _scheduleDelayedDiagnostics();
 
     } catch (e) {
