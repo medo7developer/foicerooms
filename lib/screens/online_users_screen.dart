@@ -1,10 +1,14 @@
 // lib/screens/online_users_screen.dart
+import 'dart:developer';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'dart:async';
 
 import '../providers/game_provider.dart';
+import '../services/supabase_service.dart';
 import '../services/user_services/online_users_service.dart';
+import 'game_screen.dart';
 
 class OnlineUsersScreen extends StatefulWidget {
   final String currentPlayerId;
@@ -105,24 +109,109 @@ class _OnlineUsersScreenState extends State<OnlineUsersScreen> with TickerProvid
     }
   }
 
+// استبدال دالة _respondToInvitation في ملف lib/screens/online_users_screen.dart
+
   Future<void> _respondToInvitation(Invitation invitation, bool accept) async {
     final status = accept ? 'accepted' : 'declined';
     final success = await _onlineUsersService.respondToInvitation(invitation.id, status);
 
     if (success && accept) {
-      // محاولة الانضمام للغرفة
-      final gameProvider = context.read<GameProvider>();
-      final joinSuccess = gameProvider.joinRoom(
-          invitation.roomId,
-          widget.currentPlayerId,
-          widget.currentPlayerName
+      // إظهار مؤشر التحميل
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 20),
+              Text('جاري الانضمام لغرفة "${invitation.roomName}"...'),
+            ],
+          ),
+        ),
       );
 
-      if (joinSuccess) {
-        _showSnackBar('تم قبول الدعوة والانضمام للغرفة');
-        Navigator.pop(context, true); // العودة مع نتيجة النجاح
-      } else {
-        _showSnackBar('تم قبول الدعوة لكن فشل الانضمام للغرفة', isError: true);
+      try {
+        // استيراد SupabaseService إذا لم يكن موجوداً
+        final supabaseService = context.read<SupabaseService>();
+
+        // محاولة الانضمام في الخادم أولاً (تماماً مثل home_screen.dart)
+        final result = await supabaseService.joinRoom(
+          invitation.roomId,
+          widget.currentPlayerId,
+          widget.currentPlayerName,
+        );
+
+        // إغلاق مؤشر التحميل
+        Navigator.pop(context);
+
+        if (result.success) {
+          // انتظار قصير للتأكد من تحديث قاعدة البيانات
+          await Future.delayed(const Duration(milliseconds: 500));
+
+          // تحديث حالة المستخدم عند الانضمام
+          await _onlineUsersService.updateUserStatus(
+            widget.currentPlayerId,
+            widget.currentPlayerName,
+            true,
+            roomId: invitation.roomId,
+            roomName: invitation.roomName,
+          );
+
+          // جلب بيانات الغرفة المحدثة من الخادم
+          final updatedRoom = await supabaseService.getRoomById(invitation.roomId);
+
+          if (updatedRoom != null) {
+            // محاولة الانضمام في GameProvider بالبيانات المحدثة
+            final gameProvider = context.read<GameProvider>();
+            final localSuccess = gameProvider.joinRoom(
+                updatedRoom.id,
+                widget.currentPlayerId,
+                widget.currentPlayerName
+            );
+
+            if (localSuccess) {
+              _showSnackBar('تم قبول الدعوة والانضمام للغرفة');
+
+              // الانتقال لشاشة اللعبة
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => GameScreen(playerId: widget.currentPlayerId),
+                ),
+              ).then((_) {
+                // عند العودة من شاشة اللعبة، العودة للشاشة السابقة
+                Navigator.pop(context, true);
+              });
+            } else {
+              _showSnackBar('انضممت للغرفة في الخادم، جاري تحديث البيانات...', isError: false);
+              // العودة مع نتيجة النجاح للتحديث
+              Navigator.pop(context, true);
+            }
+          } else {
+            _showSnackBar('انضممت للغرفة، جاري تحديث البيانات...', isError: false);
+            Navigator.pop(context, true);
+          }
+        } else {
+          _showSnackBar(result.reason, isError: true);
+          // إذا كان المستخدم في غرفة أخرى، تحديث الحالة
+          if (result.existingRoomId != null) {
+            await _onlineUsersService.updateUserStatus(
+              widget.currentPlayerId,
+              widget.currentPlayerName,
+              true,
+              roomId: result.existingRoomId,
+              roomName: 'غرفة أخرى',
+            );
+          }
+        }
+      } catch (e) {
+        // إغلاق مؤشر التحميل في حالة الخطأ
+        Navigator.pop(context);
+        log('خطأ في الانضمام للغرفة من الدعوة: $e');
+        _showSnackBar('خطأ في الاتصال، يرجى المحاولة مرة أخرى', isError: true);
       }
     } else if (success) {
       _showSnackBar('تم رفض الدعوة');
