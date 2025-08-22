@@ -71,23 +71,23 @@ class _GameScreenState extends State<GameScreen>
     );
   }
 
-// التعديل المطلوب في game_screen.dart - استبدال دالة _initializeGame:
-
   Future<void> _initializeGame() async {
     if (!mounted) return;
 
     try {
       _hasConnectedToPeers = false;
 
-      // 1. طلب الصلاحيات والتحقق منها
+      log('🚀 === بدء تهيئة اللعبة المحسنة ===');
+
+      // 1. طلب الصلاحيات أولاً
       final hasPermission = await _webrtcService.requestPermissions();
       if (!hasPermission) {
         throw Exception('صلاحيات الميكروفون مطلوبة للدردشة الصوتية');
       }
 
-      // 2. تهيئة الصوت المحلي مع انتظار كافي
+      // 2. تهيئة الصوت المحلي
       await _webrtcService.initializeLocalAudio();
-      await Future.delayed(const Duration(milliseconds: 1000)); // زيادة وقت الانتظار
+      await Future.delayed(const Duration(milliseconds: 1200));
       log('✅ تم تهيئة الصوت المحلي');
 
       if (!mounted) return;
@@ -96,16 +96,27 @@ class _GameScreenState extends State<GameScreen>
       final gameProvider = context.read<GameProvider>();
       gameProvider.setSupabaseService(_supabaseService);
 
-      // إضافة تهيئة ExperienceService
       final experienceService = ExperienceService();
       gameProvider.setExperienceService(experienceService);
       _setupGameEndListener(gameProvider, experienceService);
 
       _realtimeManager.registerGameProvider(gameProvider);
 
-      // 4. إعداد WebRTC callbacks مع الدوال المحسنة - هنا المشكلة الأساسية!
+      // 4. **تسجيل callbacks أولاً قبل أي شيء آخر**
+      log('🔧 === تسجيل WebRTC callbacks ===');
       setupWebRTCCallbacks(_webrtcService, _supabaseService, widget.playerId, context);
-      log('✅ تم إعداد WebRTC callbacks المحسنة');
+
+      // انتظار للتأكد من التسجيل
+      await Future.delayed(const Duration(milliseconds: 800));
+
+      // التحقق من التسجيل
+      if (!_webrtcService.hasCallbacks) {
+        log('❌ فشل تسجيل callbacks - محاولة ثانية');
+        setupWebRTCCallbacks(_webrtcService, _supabaseService, widget.playerId, context);
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+
+      log('✅ حالة callbacks: ${_webrtcService.hasCallbacks}');
 
       // 5. الاتصال بـ Realtime
       final currentRoom = gameProvider.currentRoom;
@@ -114,36 +125,47 @@ class _GameScreenState extends State<GameScreen>
         setState(() => _isRealtimeConnected = true);
         log('✅ تم الاتصال بـ Realtime');
 
-        // 6. تحديث البيانات
+        // 6. تحديث البيانات وانتظار استقرارها
         await _realtimeManager.forceRefresh();
+        await Future.delayed(const Duration(seconds: 2));
 
-        // 7. انتظار أطول قبل بدء الاتصالات الصوتية
-        await Future.delayed(const Duration(seconds: 3)); // زيادة وقت الانتظار
+        // 7. الحصول على قائمة محدثة من اللاعبين المتصلين
+        await _realtimeManager.forceRefresh(); // تحديث إضافي
+        await Future.delayed(const Duration(milliseconds: 500));
 
-        // التأكد من وجود لاعبين آخرين
-        final connectedPlayers = currentRoom.players
-            .where((p) => p.isConnected && p.id != widget.playerId)
-            .toList();
+        final updatedRoom = gameProvider.currentRoom;
+        if (updatedRoom != null) {
+          final connectedPlayers = updatedRoom.players
+              .where((p) => p.isConnected && p.id != widget.playerId)
+              .toList();
 
-        log('🔍 عدد اللاعبين المتصلين: ${connectedPlayers.length}');
+          log('🔍 اللاعبين المتصلين الفعليين: ${connectedPlayers.length}');
+          for (final player in connectedPlayers) {
+            log('   - ${player.name} (${player.id})');
+          }
 
-        if (connectedPlayers.isNotEmpty) {
-          await _connectToOtherPlayersEnhanced(currentRoom.players);
-        } else {
-          log('⚠️ لا يوجد لاعبين آخرين للاتصال بهم');
+          if (connectedPlayers.isNotEmpty) {
+            // 8. **إنشاء اتصالات متسلسلة مع انتظار أطول**
+            await _createConnectionsSequentially(connectedPlayers);
+
+            // 9. **انتظار استقرار الاتصالات قبل إرسال offers**
+            await Future.delayed(const Duration(seconds: 4));
+
+            // 10. **إرسال offers متسلسلة مع فترات انتظار أطول**
+            await _sendOffersSequentiallyRobust(connectedPlayers);
+          } else {
+            log('ℹ️ لا يوجد لاعبين آخرين متصلين حالياً');
+          }
         }
       }
 
       setState(() => _isConnecting = false);
 
-      // 8. بدء المؤقتات
+      // 11. بدء المؤقتات والمراقبة
       _startTimers();
-
-      // 9. بدء فحص الصحة الدوري لـ WebRTC
       _webrtcService.startConnectionHealthCheck();
 
-      // 10. تشخيص نهائي بعد فترة أطول
-      _scheduleDelayedDiagnostics();
+      log('🎉 === انتهت تهيئة اللعبة بنجاح ===');
 
     } catch (e) {
       log('❌ خطأ في تهيئة اللعبة: $e');
@@ -161,12 +183,101 @@ class _GameScreenState extends State<GameScreen>
         );
       }
     }
-    Future.delayed(const Duration(seconds: 20), () async {
-      if (mounted) {
-        await _testWebRTCCallbacks();
-      }
-    });
   }
+
+// دالة إنشاء اتصالات متسلسلة محسنة:
+  Future<void> _createConnectionsSequentially(List<Player> players) async {
+    log('🔧 === بدء إنشاء peer connections متسلسلة ===');
+
+    for (int i = 0; i < players.length; i++) {
+      final player = players[i];
+
+      try {
+        log('🔗 إنشاء peer connection مع ${player.name} (${i + 1}/${players.length})');
+
+        // إغلاق أي اتصال قديم أولاً
+        if (_webrtcService.hasPeer(player.id)) {
+          await _webrtcService.closePeerConnection(player.id);
+          await Future.delayed(const Duration(milliseconds: 300));
+        }
+
+        // إنشاء اتصال جديد
+        await _webrtcService.createPeerConnectionForPeer(player.id);
+
+        // انتظار أطول للاستقرار
+        await Future.delayed(const Duration(milliseconds: 1500));
+
+        // التحقق من نجاح الإنشاء
+        if (_webrtcService.hasPeer(player.id)) {
+          log('✅ تم إنشاء peer connection مع ${player.name} بنجاح');
+        } else {
+          log('❌ فشل إنشاء peer connection مع ${player.name}');
+        }
+
+        // انتظار إضافي بين الاتصالات
+        if (i < players.length - 1) {
+          await Future.delayed(const Duration(milliseconds: 800));
+        }
+
+      } catch (e) {
+        log('❌ خطأ في إنشاء peer connection مع ${player.id}: $e');
+      }
+    }
+
+    log('✅ === انتهى إنشاء peer connections ===');
+  }
+
+// دالة إرسال offers محسنة مع مراقبة الاستجابة:
+  Future<void> _sendOffersSequentiallyRobust(List<Player> players) async {
+    log('📤 === بدء إرسال offers متسلسلة مع مراقبة ===');
+
+    for (int i = 0; i < players.length; i++) {
+      final player = players[i];
+
+      try {
+        log('📨 إرسال offer إلى ${player.name} (${i + 1}/${players.length})');
+
+        // التحقق من وجود peer connection صحي
+        if (!_webrtcService.hasPeer(player.id)) {
+          log('⚠️ لا يوجد peer connection مع ${player.name}، إنشاء جديد');
+          await _webrtcService.createPeerConnectionForPeer(player.id);
+          await Future.delayed(const Duration(milliseconds: 800));
+        }
+
+        // التحقق من صحة الاتصال
+        final isHealthy = await _webrtcService.isPeerConnectionHealthy(player.id);
+        log('🔍 صحة peer connection مع ${player.name}: $isHealthy');
+
+        // إرسال offer
+        await _webrtcService.createOffer(player.id);
+        log('✅ تم إرسال offer إلى ${player.name}');
+
+        // **انتظار أطول لاستقبال answer**
+        await Future.delayed(const Duration(seconds: 6)); // زيادة الانتظار
+
+        // فحص حالة الاتصال بعد offer
+        final healthAfterOffer = await _webrtcService.isPeerConnectionHealthy(player.id);
+        log('🔍 صحة الاتصال مع ${player.name} بعد offer: $healthAfterOffer');
+
+        if (!healthAfterOffer) {
+          log('⚠️ لم يتم استقبال answer من ${player.name} - سيتم المراقبة');
+
+        }
+
+        // انتظار بين العروض
+        if (i < players.length - 1) {
+          await Future.delayed(const Duration(seconds: 2));
+        }
+
+      } catch (e) {
+        log('❌ خطأ في إرسال offer إلى ${player.id}: $e');
+      }
+    }
+
+    _hasConnectedToPeers = true;
+    log('✅ === انتهى إرسال جميع offers ===');
+  }
+
 
   void _setupGameEndListener(GameProvider gameProvider, ExperienceService experienceService) {
     // مراقبة تغييرات حالة اللعبة
@@ -338,49 +449,275 @@ class _GameScreenState extends State<GameScreen>
     }
   }
 
-// دالة لجدولة التشخيصات المؤجلة
+// التعديل الرابع: إضافة هذه الدوال في game_screen.dart:
+
+// تحديث دالة _scheduleDelayedDiagnostics لتشمل فحصاً أكثر تفصيلاً:
   void _scheduleDelayedDiagnostics() {
-    // تشخيص أولي بعد 5 ثوانٍ
-    Future.delayed(const Duration(seconds: 5), () async {
+    // فحص أولي سريع بعد 3 ثوان
+    Future.delayed(const Duration(seconds: 3), () async {
       if (mounted) {
-        log('🔍 تشخيص أولي للصوت...');
-        await _webrtcService.diagnoseAndFixAudio();
+        log('🔍 === فحص أولي سريع ===');
+        await _performQuickHealthCheck();
       }
     });
 
-    // تشخيص ثاني بعد 10 ثوانٍ
-    Future.delayed(const Duration(seconds: 10), () async {
+    // فحص متوسط بعد 7 ثوان
+    Future.delayed(const Duration(seconds: 7), () async {
       if (mounted) {
-        log('🔍 تشخيص ثاني وإصلاح شامل...');
+        log('🔍 === فحص متوسط وإصلاحات ===');
+        await _webrtcService.checkAndFixLateConnections();
         await _webrtcService.verifyAudioInAllConnections();
-        await _webrtcService.restartFailedConnections();
       }
     });
 
-    // تشخيص نهائي بعد 15 ثانية
-    Future.delayed(const Duration(seconds: 15), () async {
+    // فحص شامل بعد 12 ثانية
+    Future.delayed(const Duration(seconds: 12), () async {
       if (mounted) {
-        log('🔍 === تشخيص نهائي ===');
-        await _webrtcService.diagnoseAndFixAudio();
-        _webrtcService.debugConnectionStates();
+        log('🔍 === فحص شامل نهائي ===');
+        await _performComprehensiveCheck();
+      }
+    });
 
-        // تقرير نهائي عن حالة الصوت
-        final localTracks = _webrtcService.localStream?.getAudioTracks().length ?? 0;
-        final remoteTracks = _webrtcService.remoteStreams.length;
-        final activePeers = _webrtcService.hasPeer;
+    // فحص دوري كل 20 ثانية بعد ذلك
+    Timer.periodic(const Duration(seconds: 20), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
 
-        log('📋 === تقرير الحالة النهائية ===');
-        log('   🎤 مسارات محلية: $localTracks');
-        log('   🔊 مجاري بعيدة: $remoteTracks');
-        log('   🔗 اتصالات نشطة: $activePeers');
+      _performPeriodicHealthCheck();
+    });
+  }
 
-        if (localTracks > 0 && remoteTracks > 0) {
-          log('🎉 الدردشة الصوتية جاهزة!');
-        } else {
-          log('⚠️ قد تحتاج لإعادة تأسيس الاتصالات');
+// دالة فحص سريع للحالة
+  Future<void> _performQuickHealthCheck() async {
+    try {
+      final gameProvider = context.read<GameProvider>();
+      final connectedPlayers = gameProvider.currentRoom?.players
+          .where((p) => p.isConnected && p.id != widget.playerId)
+          .toList() ?? [];
+
+      log('⚡ فحص سريع: ${connectedPlayers.length} لاعبين متصلين');
+
+      for (final player in connectedPlayers) {
+        final hasPeer = _webrtcService.hasPeer(player.id);
+        final hasRemoteStream = _webrtcService.getRemoteStream(player.id) != null;
+
+        log('   ${player.name}: Peer=$hasPeer, Stream=$hasRemoteStream');
+
+        // إذا لم يكن هناك peer connection، إنشاؤه
+        if (!hasPeer) {
+          log('🔧 إنشاء peer connection مفقود مع ${player.name}');
+          try {
+            await _webrtcService.createPeerConnectionForPeer(player.id);
+            await Future.delayed(const Duration(milliseconds: 500));
+            await _webrtcService.createOffer(player.id);
+          } catch (e) {
+            log('❌ فشل في إنشاء peer connection مع ${player.id}: $e');
+          }
         }
       }
-    });
+
+      // فحص الصوت المحلي
+      final localTracks = _webrtcService.localStream?.getAudioTracks().length ?? 0;
+      log('🎤 مسارات صوتية محلية: $localTracks');
+
+      if (localTracks == 0) {
+        log('⚠️ لا توجد مسارات صوتية محلية - إعادة التهيئة');
+        await _webrtcService.initializeLocalAudio();
+      }
+
+    } catch (e) {
+      log('❌ خطأ في الفحص السريع: $e');
+    }
+  }
+
+// دالة فحص شامل متقدم
+  Future<void> _performComprehensiveCheck() async {
+    try {
+      log('🔍 === بدء الفحص الشامل ===');
+
+      // 1. إحصائيات عامة
+      final stats = await _webrtcService.getDetailedStats();
+      log('📊 إحصائيات WebRTC: $stats');
+
+      // 2. فحص كل peer connection
+      final gameProvider = context.read<GameProvider>();
+      final connectedPlayers = gameProvider.currentRoom?.players
+          .where((p) => p.isConnected && p.id != widget.playerId)
+          .toList() ?? [];
+
+      int healthyConnections = 0;
+      int totalConnections = connectedPlayers.length;
+
+      for (final player in connectedPlayers) {
+        final status = _webrtcService.getConnectionStatus(player.id);
+        final isHealthy = await _webrtcService.isPeerConnectionHealthy(player.id);
+
+        log('🔍 ${player.name}: status=$status, healthy=$isHealthy');
+
+        if (isHealthy) {
+          healthyConnections++;
+        } else {
+          log('🔧 محاولة إصلاح اتصال ${player.name}');
+          await _attemptConnectionRepair(player.id);
+        }
+      }
+
+      log('📈 اتصالات صحية: $healthyConnections/$totalConnections');
+
+      // 3. تقرير نهائي
+      final localTracks = _webrtcService.localStream?.getAudioTracks().length ?? 0;
+      final remoteTracks = _webrtcService.remoteStreams.length;
+
+      log('🎵 === تقرير الصوت النهائي ===');
+      log('   🎤 مسارات محلية: $localTracks');
+      log('   🔊 مجاري بعيدة: $remoteTracks');
+      log('   📡 اتصالات صحية: $healthyConnections/$totalConnections');
+
+      if (healthyConnections > 0 && localTracks > 0) {
+        log('🎉 الدردشة الصوتية تعمل بشكل صحيح!');
+      } else {
+        log('⚠️ توجد مشاكل في الدردشة الصوتية');
+
+        // محاولة إصلاح شاملة
+        await _performEmergencyFix();
+      }
+
+    } catch (e) {
+      log('❌ خطأ في الفحص الشامل: $e');
+    }
+  }
+
+// دالة إصلاح اتصال واحد
+  Future<void> _attemptConnectionRepair(String peerId) async {
+    try {
+      log('🔧 محاولة إصلاح اتصال $peerId');
+
+      // 1. فحص صحة الاتصال
+      final isHealthy = await _webrtcService.isPeerConnectionHealthy(peerId);
+      if (isHealthy) {
+        log('✅ الاتصال مع $peerId صحي فعلاً');
+        return;
+      }
+
+      // 2. محاولة إعادة تشغيل ICE
+      if (_webrtcService.hasPeer(peerId)) {
+        log('🔄 إعادة تشغيل ICE لـ $peerId');
+        try {
+          // الحصول على peer connection وإعادة تشغيل ICE
+          // هذا يتطلب إضافة دالة في WebRTCService
+          await _webrtcService.restartPeerIce(peerId);
+
+          // انتظار وفحص مرة أخرى
+          await Future.delayed(const Duration(seconds: 2));
+
+          final fixedHealthy = await _webrtcService.isPeerConnectionHealthy(peerId);
+          if (fixedHealthy) {
+            log('✅ تم إصلاح الاتصال مع $peerId عبر ICE restart');
+            return;
+          }
+        } catch (e) {
+          log('⚠️ فشل ICE restart لـ $peerId: $e');
+        }
+      }
+
+      // 3. إعادة إنشاء الاتصال كملاذ أخير
+      log('🔄 إعادة إنشاء اتصال كامل مع $peerId');
+      await _webrtcService.closePeerConnection(peerId);
+      await Future.delayed(const Duration(milliseconds: 1000));
+
+      await _webrtcService.createPeerConnectionForPeer(peerId);
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _webrtcService.createOffer(peerId);
+
+      log('✅ تمت إعادة إنشاء الاتصال مع $peerId');
+
+    } catch (e) {
+      log('❌ فشل في إصلاح اتصال $peerId: $e');
+    }
+  }
+
+// دالة الإصلاح الطارئ
+  Future<void> _performEmergencyFix() async {
+    try {
+      log('🚨 بدء الإصلاح الطارئ للدردشة الصوتية');
+
+      // 1. إعادة تهيئة الصوت المحلي
+      log('🎤 إعادة تهيئة الصوت المحلي');
+      try {
+        await _webrtcService.initializeLocalAudio();
+        await Future.delayed(const Duration(seconds: 1));
+      } catch (e) {
+        log('❌ فشل في إعادة تهيئة الصوت المحلي: $e');
+      }
+
+      // 2. إعادة إنشاء جميع الاتصالات
+      final gameProvider = context.read<GameProvider>();
+      final connectedPlayers = gameProvider.currentRoom?.players
+          .where((p) => p.isConnected && p.id != widget.playerId)
+          .toList() ?? [];
+
+      log('🔄 إعادة إنشاء ${connectedPlayers.length} اتصالات');
+
+      for (final player in connectedPlayers) {
+        try {
+          // إغلاق الاتصال القديم
+          await _webrtcService.closePeerConnection(player.id);
+          await Future.delayed(const Duration(milliseconds: 500));
+
+          // إنشاء اتصال جديد
+          await _webrtcService.createPeerConnectionForPeer(player.id);
+          await Future.delayed(const Duration(milliseconds: 800));
+
+          // إرسال offer جديد
+          await _webrtcService.createOffer(player.id);
+          await Future.delayed(const Duration(seconds: 1));
+
+          log('✅ تم إعادة إنشاء اتصال مع ${player.name}');
+
+        } catch (e) {
+          log('❌ فشل في إعادة إنشاء اتصال مع ${player.id}: $e');
+        }
+      }
+
+      // 3. تفعيل جميع المسارات الصوتية
+      _webrtcService.enableRemoteAudio();
+      await _webrtcService.ensureAudioPlayback();
+
+      log('🚨 انتهى الإصلاح الطارئ');
+
+    } catch (e) {
+      log('❌ خطأ في الإصلاح الطارئ: $e');
+    }
+  }
+
+// دالة فحص دوري خفيف
+  void _performPeriodicHealthCheck() {
+    try {
+      log('⏰ فحص دوري خفيف');
+
+      final localTracks = _webrtcService.localStream?.getAudioTracks().length ?? 0;
+      final remoteTracks = _webrtcService.remoteStreams.length;
+
+      log('📊 حالة سريعة: محلي=$localTracks، بعيد=$remoteTracks');
+
+      // إذا لم يكن هناك صوت محلي، إعادة التهيئة
+      if (localTracks == 0) {
+        log('🔧 إعادة تهيئة الصوت المحلي المفقود');
+        _webrtcService.initializeLocalAudio().catchError((e) {
+          log('❌ فشل إعادة تهيئة الصوت: $e');
+        });
+      }
+
+      // تفعيل الصوت البعيد إذا كان متوفراً
+      if (remoteTracks > 0) {
+        _webrtcService.enableRemoteAudio();
+      }
+
+    } catch (e) {
+      log('❌ خطأ في الفحص الدوري: $e');
+    }
   }
 
 // تحديث دالة _startTimers لتضمين تنظيف الإشارات
