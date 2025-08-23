@@ -7,23 +7,76 @@ import '../../models/user_model.dart';
 
 class AuthService {
   final SupabaseClient _supabase = Supabase.instance.client;
-  final GoogleSignIn _googleSignIn = GoogleSignIn();
+
+  // تكوين Google Sign-In بشكل صحيح لـ Supabase
+  final GoogleSignIn _googleSignIn = GoogleSignIn(
+    scopes: [
+      'email',
+      'profile',
+    ],
+    // Client ID للويب من Google Cloud Console (ليس Firebase)
+    // سيتم الحصول عليه من Google Cloud Console
+    serverClientId: "780961481011-0iam080l7tss375rhkpu2kv2v8i5e0fd.apps.googleusercontent.com", // سيتم تعيينه لاحقاً
+  );
 
   UserModel? _currentUser;
   UserModel? get currentUser => _currentUser;
+
+  // تهيئة Google Sign-In
+  Future<void> _initializeGoogleSignIn() async {
+    try {
+      log('تهيئة Google Sign-In');
+      // التأكد من عدم وجود جلسة سابقة
+      await _googleSignIn.signOut();
+      log('تم تهيئة Google Sign-In بنجاح');
+    } catch (e) {
+      log('خطأ في تهيئة Google Sign-In: $e');
+    }
+  }
 
   // تسجيل الدخول بـ Google
   Future<AuthResult> signInWithGoogle() async {
     try {
       log('بدء تسجيل الدخول بـ Google');
 
-      // تسجيل الدخول بـ Google
-      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+      // تهيئة Google Sign-In أولاً
+      await _initializeGoogleSignIn();
+
+      // محاولة تسجيل الدخول
+      GoogleSignInAccount? googleUser;
+
+      try {
+        googleUser = await _googleSignIn.signIn();
+      } catch (e) {
+        log('خطأ في تسجيل الدخول بـ Google: $e');
+
+        // محاولة أخرى مع إعادة تهيئة
+        try {
+          await _googleSignIn.disconnect();
+          await Future.delayed(const Duration(milliseconds: 500));
+          googleUser = await _googleSignIn.signIn();
+        } catch (e2) {
+          log('فشل في المحاولة الثانية: $e2');
+          return AuthResult(
+              success: false,
+              message: 'فشل في الاتصال بخدمة Google. تأكد من الاتصال بالإنترنت وحاول مرة أخرى.'
+          );
+        }
+      }
+
       if (googleUser == null) {
         return AuthResult(success: false, message: 'تم إلغاء تسجيل الدخول');
       }
 
+      log('تم تسجيل الدخول بـ Google: ${googleUser.email}');
+
       final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+
+      if (googleAuth.idToken == null) {
+        return AuthResult(success: false, message: 'فشل في الحصول على رمز المصادقة');
+      }
+
+      log('تم الحصول على رمز المصادقة');
 
       // تسجيل الدخول بـ Supabase
       final AuthResponse response = await _supabase.auth.signInWithIdToken(
@@ -33,8 +86,10 @@ class AuthService {
       );
 
       if (response.user == null) {
-        return AuthResult(success: false, message: 'فشل تسجيل الدخول');
+        return AuthResult(success: false, message: 'فشل تسجيل الدخول مع Supabase');
       }
+
+      log('تم تسجيل الدخول مع Supabase');
 
       // إنشاء أو تحديث بيانات المستخدم
       final user = await _createOrUpdateUser(response.user!);
@@ -47,7 +102,10 @@ class AuthService {
       return AuthResult(success: true, user: user);
     } catch (e) {
       log('خطأ في تسجيل الدخول بـ Google: $e');
-      return AuthResult(success: false, message: 'خطأ في تسجيل الدخول: $e');
+      return AuthResult(
+          success: false,
+          message: 'خطأ في تسجيل الدخول. تأكد من تكوين التطبيق بشكل صحيح.'
+      );
     }
   }
 

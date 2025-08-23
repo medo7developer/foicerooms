@@ -42,3 +42,8 @@ android {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // إضافة Google Play Services للمصادقة فقط
+    implementation("com.google.android.gms:play-services-auth:21.0.0")
+}
