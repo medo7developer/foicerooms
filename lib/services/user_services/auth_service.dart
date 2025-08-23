@@ -7,70 +7,55 @@ import '../../models/user_model.dart';
 
 class AuthService {
   final SupabaseClient _supabase = Supabase.instance.client;
+  final GoogleSignIn _googleSignIn = GoogleSignIn();
 
   UserModel? _currentUser;
   UserModel? get currentUser => _currentUser;
 
-  // --- تهيئة الخدمة ---
-  Future<void> initialize() async {
-    log('جاري تهيئة خدمة المصادقة...');
-    await GoogleSignIn.instance.initialize(
-      clientId: null, // Android بيستخدم auto
-      serverClientId:
-      "780961481011-0iam080l7tss375rhkpu2kv2v8i5e0fd.apps.googleusercontent.com", // Web Client ID
-    );
-    log('تم تهيئة GoogleSignIn.');
-    await checkAuthStatus();
-  }
-
-  // --- تسجيل الدخول بـ Google ---
+  // تسجيل الدخول بـ Google
   Future<AuthResult> signInWithGoogle() async {
     try {
       log('بدء تسجيل الدخول بـ Google');
 
-      final GoogleSignInAccount? googleUser =
-      await GoogleSignIn.instance.authenticate();
+      // تسجيل الدخول بـ Google
+      final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
       if (googleUser == null) {
         return AuthResult(success: false, message: 'تم إلغاء تسجيل الدخول');
       }
 
-      // هنا بتطلب serverAuthCode عشان تستخدمه مع Supabase
-      final GoogleSignInServerAuthorization? serverAuth =
-      await googleUser.authorizationClient.authorizeServer(['email', 'profile']);
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
 
-      if (serverAuth == null) {
-        return AuthResult(
-            success: false, message: 'فشل الحصول على Server Auth Code');
-      }
-
-      // تسجّل في Supabase باستخدام idToken (أو serverAuthCode)
+      // تسجيل الدخول بـ Supabase
       final AuthResponse response = await _supabase.auth.signInWithIdToken(
         provider: OAuthProvider.google,
-        idToken: serverAuth.serverAuthCode,
+        idToken: googleAuth.idToken!,
+        accessToken: googleAuth.accessToken,
       );
 
       if (response.user == null) {
-        return AuthResult(
-            success: false, message: 'فشل تسجيل الدخول في Supabase');
+        return AuthResult(success: false, message: 'فشل تسجيل الدخول');
       }
 
+      // إنشاء أو تحديث بيانات المستخدم
       final user = await _createOrUpdateUser(response.user!);
       _currentUser = user;
+
+      // حفظ بيانات المستخدم محلياً
       await _saveUserLocally(user);
 
       log('تم تسجيل الدخول بنجاح: ${user.displayName}');
       return AuthResult(success: true, user: user);
     } catch (e) {
       log('خطأ في تسجيل الدخول بـ Google: $e');
-      return AuthResult(success: false, message: 'خطأ: $e');
+      return AuthResult(success: false, message: 'خطأ في تسجيل الدخول: $e');
     }
   }
 
-  // --- تسجيل الخروج ---
+  // تسجيل الخروج
   Future<void> signOut() async {
     try {
       await _supabase.auth.signOut();
-      await GoogleSignIn.instance.disconnect();
+      await _googleSignIn.signOut();
       _currentUser = null;
       await _clearUserLocally();
       log('تم تسجيل الخروج');
@@ -79,22 +64,26 @@ class AuthService {
     }
   }
 
-  // --- التحقق من حالة المصادقة ---
+  // التحقق من حالة تسجيل الدخول
   Future<bool> checkAuthStatus() async {
     try {
       final session = _supabase.auth.currentSession;
       if (session?.user != null) {
         _currentUser = await _getUserFromDatabase(session!.user.id);
         if (_currentUser == null) {
+          // إنشاء المستخدم إذا لم يكن موجوداً
           _currentUser = await _createOrUpdateUser(session.user);
         }
         return true;
       }
+
+      // محاولة تحميل من التخزين المحلي
       final savedUser = await _loadUserLocally();
       if (savedUser != null) {
         _currentUser = savedUser;
         return true;
       }
+
       return false;
     } catch (e) {
       log('خطأ في فحص حالة المصادقة: $e');
@@ -114,30 +103,40 @@ class AuthService {
         'photo_url': supabaseUser.userMetadata?['avatar_url'],
         'last_login_at': DateTime.now().toIso8601String(),
       };
+
+      // البحث عن المستخدم الموجود
       final existingUser = await _supabase
           .from('users')
           .select()
           .eq('id', supabaseUser.id)
           .maybeSingle();
+
       if (existingUser == null) {
+        // إنشاء مستخدم جديد
         userData['created_at'] = DateTime.now().toIso8601String();
         userData['is_profile_complete'] = false;
+
         await _supabase.from('users').insert(userData);
         log('تم إنشاء مستخدم جديد: ${userData['display_name']}');
       } else {
+        // تحديث المستخدم الموجود
         await _supabase.from('users')
             .update(userData)
             .eq('id', supabaseUser.id);
         log('تم تحديث بيانات المستخدم: ${userData['display_name']}');
       }
+
+      // جلب البيانات المحدثة
       final updatedUser = await _supabase
           .from('users')
           .select()
           .eq('id', supabaseUser.id)
           .single();
+
       return UserModel.fromJson(updatedUser);
     } catch (e) {
       log('خطأ في إنشاء/تحديث المستخدم: $e');
+      // إرجاع مستخدم افتراضي
       return UserModel(
         id: supabaseUser.id,
         email: supabaseUser.email ?? '',
@@ -157,6 +156,7 @@ class AuthService {
           .select()
           .eq('id', userId)
           .maybeSingle();
+
       if (userData != null) {
         return UserModel.fromJson(userData);
       }
@@ -175,34 +175,45 @@ class AuthService {
   }) async {
     try {
       if (_currentUser == null) return false;
+
       String? uploadedAvatarPath;
+
+      // رفع الصورة إذا تم تحديدها
       if (avatarFile != null) {
         final fileName = '${_currentUser!.id}_avatar_${DateTime.now().millisecondsSinceEpoch}';
         final response = await _supabase.storage
             .from('user-avatars')
             .upload('$fileName.jpg', avatarFile);
+
         if (response.isNotEmpty) {
           uploadedAvatarPath = response;
         }
       }
+
+      // تحديث البيانات
       final updateData = <String, dynamic>{};
       if (displayName != null) updateData['display_name'] = displayName;
       if (uploadedAvatarPath != null) updateData['custom_avatar_path'] = uploadedAvatarPath;
       if (customAvatarPath != null) updateData['custom_avatar_path'] = customAvatarPath;
       updateData['is_profile_complete'] = true;
+
       if (updateData.isNotEmpty) {
         await _supabase.from('users')
             .update(updateData)
             .eq('id', _currentUser!.id);
+
+        // تحديث الكائن المحلي
         _currentUser = _currentUser!.copyWith(
           displayName: displayName ?? _currentUser!.displayName,
           customAvatarPath: uploadedAvatarPath ?? customAvatarPath ?? _currentUser!.customAvatarPath,
           isProfileComplete: true,
         );
+
         await _saveUserLocally(_currentUser!);
         log('تم تحديث ملف المستخدم الشخصي');
         return true;
       }
+
       return false;
     } catch (e) {
       log('خطأ في تحديث ملف المستخدم: $e');
@@ -228,6 +239,7 @@ class AuthService {
       final prefs = await SharedPreferences.getInstance();
       final userString = prefs.getString('current_user');
       if (userString == null) return null;
+
       final userMap = <String, dynamic>{};
       for (final entry in userString.split('|')) {
         final parts = entry.split(':');
@@ -235,6 +247,7 @@ class AuthService {
           userMap[parts[0]] = parts[1];
         }
       }
+
       if (userMap.isNotEmpty) {
         return UserModel.fromJson(userMap);
       }
@@ -257,8 +270,10 @@ class AuthService {
   // تحديث إحصائيات المستخدم مع الاسم والإيميل
   Future<void> syncUserWithExperienceService() async {
     if (_currentUser == null) return;
+
     try {
       // هنا نحدث الخدمات الأخرى لتستخدم بيانات المستخدم الجديدة
+      // سيتم استدعاء هذا من ExperienceService
     } catch (e) {
       log('خطأ في مزامنة المستخدم مع الخدمات: $e');
     }
@@ -270,6 +285,7 @@ class AuthResult {
   final bool success;
   final String? message;
   final UserModel? user;
+
   AuthResult({
     required this.success,
     this.message,
