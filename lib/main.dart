@@ -1,4 +1,4 @@
-// lib/main.dart - تعديلات الدمج مع Supabase Google Auth
+// lib/main.dart - نسخة مبسطة بدون Deep Links
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -9,26 +9,32 @@ import 'package:voice_rooms_app/screens/profile_setup_screen.dart';
 import 'package:voice_rooms_app/services/experience_service.dart';
 import 'services/supabase_service.dart';
 import 'services/webrtc_services/webrtc_service.dart';
-import 'services/realtime_manager.dart'; // إضافة جديدة
+import 'services/realtime_manager.dart';
 import 'providers/game_provider.dart';
 import 'screens/home_screen.dart';
+import 'dart:developer';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // تهيئة Supabase
-  await Supabase.initialize(
-    url: 'https://fikaujglqyffcszfjklh.supabase.co',
-    anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpa2F1amdscXlmZmNzemZqa2xoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyODQzMDAsImV4cCI6MjA3MDg2MDMwMH0.dSKM0Wv4worp2d6gUs1sopArZcFV4BtAmGRXz_lZkMc',
-    debug: true, // إضافة debug mode
-  );
+  try {
+    // تهيئة Supabase
+    await Supabase.initialize(
+      url: 'https://fikaujglqyffcszfjklh.supabase.co',
+      anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZpa2F1amdscXlmZmNzemZqa2xoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTUyODQzMDAsImV4cCI6MjA3MDg2MDMwMH0.dSKM0Wv4worp2d6gUs1sopArZcFV4BtAmGRXz_lZkMc',
+      debug: true,
+    );
+
+    log('تم تهيئة Supabase بنجاح');
+  } catch (e) {
+    log('خطأ في تهيئة Supabase: $e');
+  }
 
   runApp(const VoiceRoomsApp());
 }
 
-// تعديل VoiceRoomsApp:
 class VoiceRoomsApp extends StatelessWidget {
   const VoiceRoomsApp({super.key});
 
@@ -72,7 +78,6 @@ class VoiceRoomsApp extends StatelessWidget {
                 ),
               ),
             ),
-            // إضافة نظام التوجيه الجديد
             routes: {
               '/': (context) => _getInitialScreen(authProvider),
               '/login': (context) => const LoginScreen(),
@@ -91,22 +96,45 @@ class VoiceRoomsApp extends StatelessWidget {
     return StreamBuilder<AuthState>(
       stream: Supabase.instance.client.auth.onAuthStateChange,
       builder: (context, snapshot) {
+        // عرض شاشة التحميل عند التهيئة
         if (authProvider.isLoading) {
-          return const Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(),
+          return Scaffold(
+            body: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF667eea), Color(0xFF764ba2), Color(0xFFf093fb)],
+                ),
+              ),
+              child: const Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    CircularProgressIndicator(color: Colors.white),
+                    SizedBox(height: 20),
+                    Text(
+                      'جاري التحقق من حالة تسجيل الدخول...',
+                      style: TextStyle(color: Colors.white, fontSize: 16),
+                    ),
+                  ],
+                ),
+              ),
             ),
           );
         }
 
+        // إذا لم يكن مسجل دخول
         if (!authProvider.isAuthenticated) {
           return const LoginScreen();
         }
 
+        // إذا كان مسجل دخول ولكن الملف الشخصي غير مكتمل
         if (!authProvider.isProfileComplete) {
           return const ProfileSetupScreen();
         }
 
+        // إذا كان كل شيء مكتمل
         return const HomeScreen();
       },
     );
