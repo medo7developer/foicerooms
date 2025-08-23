@@ -1,4 +1,4 @@
-// ملف: lib/widgets/game_states/continue_voting_content.dart
+// ملف: lib/widgets/game_stats/continue_voting_content.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -16,7 +16,7 @@ class ContinueVotingContent extends StatelessWidget {
     required this.currentPlayer,
   });
 
-// تحديثات في ملف: lib/widgets/game_states/continue_voting_content.dart
+// تحديثات في ملف: lib/widgets/game_stats/continue_voting_content.dart
 
   @override
   Widget build(BuildContext context) {

@@ -1,4 +1,4 @@
-// ملف جديد: lib/widgets/game_states/eliminated_player_content.dart
+// ملف جديد: lib/widgets/game_stats/eliminated_player_content.dart
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 

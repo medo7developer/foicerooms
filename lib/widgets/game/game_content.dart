@@ -2,12 +2,12 @@ import 'package:flutter/material.dart';
 import '../../models/player_model.dart';
 import '../../providers/game_provider.dart';
 import '../../providers/game_state.dart';
-import '../game_states/continue_voting_content.dart';
-import '../game_states/eliminated_player_content.dart';
-import '../game_states/waiting_content.dart';
-import '../game_states/playing_content.dart';
-import '../game_states/voting_content.dart';
-import '../game_states/finished_content.dart';
+import '../game_stats/continue_voting_content.dart';
+import '../game_stats/eliminated_player_content.dart';
+import '../game_stats/waiting_content.dart';
+import '../game_stats/playing_content.dart';
+import '../game_stats/voting_content.dart';
+import '../game_stats/finished_content.dart';
 import '../../models/game_room_model.dart';
 
 class GameContent extends StatelessWidget {
