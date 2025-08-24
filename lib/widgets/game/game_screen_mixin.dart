@@ -725,9 +725,23 @@ mixin GameScreenMixin {
           ),
           ElevatedButton(
             onPressed: () async {
-              await supabaseService.leaveRoom(playerId);
-              context.read<GameProvider>().leaveRoom();
-              Navigator.popUntil(context, (route) => route.isFirst);
+              try {
+                // 🔥 تنظيف شامل لـ WebRTC قبل المغادرة لتجنب تسرب الذاكرة
+                log('🧹 بدء تنظيف موارد قبل مغادرة اللعبة');
+                final webrtcService = context.read<WebRTCService>();
+                await webrtcService.cleanupAllConnections();
+                
+                // مغادرة الغرفة
+                await supabaseService.leaveRoom(playerId);
+                context.read<GameProvider>().leaveRoom();
+                
+                log('✅ تم تنظيف الموارد ومغادرة الغرفة بنجاح');
+                Navigator.popUntil(context, (route) => route.isFirst);
+              } catch (e) {
+                log('❌ خطأ أثناء مغادرة اللعبة: $e');
+                // المغادرة حتى لو كان هناك خطأ في التنظيف
+                Navigator.popUntil(context, (route) => route.isFirst);
+              }
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             child: const Text('مغادرة', style: TextStyle(color: Colors.white)),

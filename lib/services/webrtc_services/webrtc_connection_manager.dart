@@ -43,16 +43,20 @@ class WebRTCConnectionManager {
       WebRTCSignalingCallbacks signalingCallbacks,
       ) async {
     try {
-      // إعدادات محسنة مع TURN servers موثوقة وحديثة
+      // 🔥 إصلاح تسرب الذاكرة: تنظيف أي اتصال سابق
+      if (peers.containsKey(peerId)) {
+        log('🧹 تنظيف peer connection سابق لـ $peerId لتجنب تسرب الذاكرة');
+        await _cleanupExistingConnection(peerId);
+      }
+      // 🔥 إعدادات محسنة وموثوقة مع TURN servers محدثة وآمنة للذاكرة
       final Map<String, dynamic> configuration = {
         'iceServers': [
-          // STUN servers متعددة للتنوع
+          // STUN servers موثوقة وسريعة
           {'urls': 'stun:stun.l.google.com:19302'},
           {'urls': 'stun:stun1.l.google.com:19302'}, 
-          {'urls': 'stun:stun2.l.google.com:19302'},
           {'urls': 'stun:stun.cloudflare.com:3478'},
           
-          // TURN servers موثوقة ومحدثة (2024)
+          // TURN servers موثوقة ومحدثة (2024-2025) مع أداء محسن
           {
             'urls': [
               'turn:relay.metered.ca:80',
@@ -71,7 +75,7 @@ class WebRTCConnectionManager {
             'username': 'dd7ce87b5d39a6ba6043b5b6', 
             'credential': 'nMH0i5wRzpJfrMny',
           },
-          // Backup TURN server
+          // Backup TURN server آمن ومجاني
           {
             'urls': [
               'turn:openrelay.metered.ca:80',
@@ -82,16 +86,21 @@ class WebRTCConnectionManager {
           },
         ],
         'sdpSemantics': 'unified-plan',
-        'iceCandidatePoolSize': 15, // زيادة pool size
+        'iceCandidatePoolSize': 10, // 🔥 تقليل pool size لتوفير الذاكرة
         'bundlePolicy': 'max-bundle',
         'rtcpMuxPolicy': 'require', 
         'iceTransportPolicy': 'all',
-        // إعدادات محسنة للاتصال
+        // 🔥 إعدادات محسنة للأداء وتوفير الذاكرة
         'enableDtlsSrtp': true,
         'enableRtpDataChannel': false,
-        'continualGatheringPolicy': 'gather_continually', // إضافة مهمة
-        'iceConnectionReceivingTimeout': 30000, // 30 ثانية timeout
-        'iceBackupCandidatePairPingInterval': 2000, // فحص backup candidates
+        'continualGatheringPolicy': 'gather_continually',
+        'iceConnectionReceivingTimeout': 20000, // 🔥 تقليل timeout لتوفير الموارد
+        'iceBackupCandidatePairPingInterval': 5000, // 🔥 تقليل تكرار ping
+        // إعدادات إضافية لتحسين الاستقرار
+        'iceInactiveTimeout': 30000,
+        'enableImplicitRollback': true,
+        'enableCpuAdaptation': false, // توفير موارد المعالج
+        'maxBitrate': 32000, // 🔥 تحديد أقصى bitrate للصوت
       };
 
       log('🔧 إنشاء peer connection لـ $peerId مع إعدادات محسنة');
@@ -578,6 +587,11 @@ class WebRTCConnectionManager {
           log('⚠️ انقطع الاتصال مع $peerId');
           _onPeerDisconnected(peerId);
           break;
+        case RTCPeerConnectionState.RTCPeerConnectionStateClosed:
+          log('🔴 تم إغلاق الاتصال مع $peerId');
+          // 🔥 تنظيف فوري عند الإغلاق لتجنب تسرب الذاكرة
+          _immediateCleanup(peerId);
+          break;
         case RTCPeerConnectionState.RTCPeerConnectionStateConnecting:
           log('🔄 جاري الاتصال مع $peerId');
           break;
@@ -607,14 +621,23 @@ class WebRTCConnectionManager {
           log('⚠️ انقطع ICE connection مع $peerId - إعادة محاولة');
           _handleIceDisconnection(peerId, pc);
           break;
+        case RTCIceConnectionState.RTCIceConnectionStateClosed:
+          log('🔴 تم إغلاق ICE connection مع $peerId');
+          // 🔥 تنظيف فوري عند إغلاق ICE لتجنب تسرب الذاكرة
+          _immediateCleanup(peerId);
+          break;
         case RTCIceConnectionState.RTCIceConnectionStateChecking:
           log('🔍 فحص ICE candidates مع $peerId');
           // إضافة timeout للفحص
           Future.delayed(const Duration(seconds: 15), () async {
-            final currentState = await pc.getIceConnectionState();
-            if (currentState == RTCIceConnectionState.RTCIceConnectionStateChecking) {
-              log('⏰ انتهت مهلة فحص ICE لـ $peerId - إعادة تشغيل');
-              await pc.restartIce();
+            try {
+              final currentState = await pc.getIceConnectionState();
+              if (currentState == RTCIceConnectionState.RTCIceConnectionStateChecking) {
+                log('⏰ انتهت مهلة فحص ICE لـ $peerId - إعادة تشغيل');
+                await pc.restartIce();
+              }
+            } catch (e) {
+              log('❌ خطأ في timeout فحص ICE لـ $peerId: $e');
             }
           });
           break;
@@ -738,14 +761,23 @@ class WebRTCConnectionManager {
     try {
       final pc = peers[peerId];
       if (pc != null) {
-        await pc.close();
-        peers.remove(peerId);
-        remoteStreams.remove(peerId);
-        pendingCandidates.remove(peerId);
-        log('تم إغلاق الاتصال مع $peerId');
+        log('🔴 إغلاق peer connection لـ $peerId');
+        
+        // إغلاق آمن مع معالجة الأخطاء
+        try {
+          await pc.close();
+        } catch (closeError) {
+          log('⚠️ خطأ أثناء إغلاق peer connection لـ $peerId: $closeError');
+        }
+        
+        // تنظيف شامل
+        await _immediateCleanup(peerId);
+        log('✅ تم إغلاق وتنظيف الاتصال مع $peerId');
       }
     } catch (e) {
-      log('خطأ في إغلاق الاتصال: $e');
+      log('❌ خطأ في إغلاق الاتصال مع $peerId: $e');
+      // تنظيف قسري حتى في حالة الخطأ
+      await _forceCleanup(peerId);
     }
   }
 
@@ -785,19 +817,110 @@ class WebRTCConnectionManager {
     try {
       log('🔄 إعادة محاولة الاتصال مع $peerId');
 
-      // إغلاق الاتصال الحالي
+      // إغلاق الاتصال الحالي بشكل آمن
       await closePeerConnection(peerId);
 
-      // إعادة إنشاء الاتصال بعد تأخير
+      // انتظار لضمان التنظيف
       await Future.delayed(const Duration(seconds: 2));
 
+      // إنشاء اتصال جديد
       await createPeerConnectionForPeer(peerId, WebRTCSignalingCallbacks());
       await createOffer(peerId, WebRTCSignalingCallbacks());
 
       log('✅ تمت إعادة محاولة الاتصال مع $peerId');
     } catch (e) {
       log('❌ فشل في إعادة محاولة الاتصال مع $peerId: $e');
+      // تنظيف قسري في حالة الفشل
+      await _forceCleanup(peerId);
     }
+  }
+
+  // 🔥 دالة تنظيف شاملة لتجنب تسرب الذاكرة
+  Future<void> _cleanupExistingConnection(String peerId) async {
+    try {
+      final pc = peers[peerId];
+      if (pc != null) {
+        log('🧹 تنظيف اتصال موجود لـ $peerId');
+        
+        // إيقاف جميع معالجات الأحداث
+        pc.onIceCandidate = null;
+        pc.onTrack = null;
+        pc.onConnectionState = null;
+        pc.onIceConnectionState = null;
+        pc.onSignalingState = null;
+        pc.onIceGatheringState = null;
+        
+        // إغلاق الاتصال
+        try {
+          await pc.close();
+        } catch (e) {
+          log('⚠️ خطأ أثناء إغلاق peer connection قديم: $e');
+        }
+      }
+      
+      // تنظيف الخرائط
+      await _immediateCleanup(peerId);
+      
+    } catch (e) {
+      log('❌ خطأ في تنظيف الاتصال الموجود لـ $peerId: $e');
+      await _forceCleanup(peerId);
+    }
+  }
+
+  // 🔥 تنظيف فوري للموارد
+  Future<void> _immediateCleanup(String peerId) async {
+    try {
+      // إزالة من جميع الخرائط
+      peers.remove(peerId);
+      remoteStreams.remove(peerId);
+      pendingCandidates.remove(peerId);
+      
+      log('🧹 تم تنظيف موارد $peerId من الذاكرة');
+    } catch (e) {
+      log('❌ خطأ في التنظيف الفوري لـ $peerId: $e');
+    }
+  }
+
+  // 🔥 تنظيف قسري في حالة الأخطاء
+  Future<void> _forceCleanup(String peerId) async {
+    try {
+      log('🚨 تنظيف قسري لـ $peerId');
+      
+      // تنظيف جميع الموارد بدون استثناءات
+      peers.remove(peerId);
+      remoteStreams.remove(peerId);
+      pendingCandidates.remove(peerId);
+      
+      // محاولة إجبار garbage collection
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      log('✅ تم التنظيف القسري لـ $peerId');
+    } catch (e) {
+      log('❌ خطأ في التنظيف القسري: $e');
+    }
+  }
+
+  // 🔥 تنظيف جميع الاتصالات (استخدام عند إغلاق التطبيق)
+  Future<void> cleanupAllConnections() async {
+    log('🧹 بدء تنظيف جميع الاتصالات');
+    
+    final allPeerIds = List<String>.from(peers.keys);
+    
+    for (final peerId in allPeerIds) {
+      try {
+        await closePeerConnection(peerId);
+      } catch (e) {
+        log('❌ خطأ في تنظيف $peerId: $e');
+        await _forceCleanup(peerId);
+      }
+    }
+    
+    // تنظيف نهائي
+    peers.clear();
+    remoteStreams.clear();
+    pendingCandidates.clear();
+    
+    log('✅ تم تنظيف جميع الاتصالات بنجاح');
   }
 
   // دالة للتحقق من صحة ICE candidate

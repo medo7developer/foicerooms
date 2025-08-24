@@ -379,6 +379,28 @@ class WebRTCService {
     }
   }
 
+  // 🔥 دالة تنظيف شاملة لجميع الاتصالات (لتجنب تسرب الذاكرة)
+  Future<void> cleanupAllConnections() async {
+    try {
+      log('🧹 بدء تنظيف شامل لجميع peer connections');
+      
+      // استخدام connection manager للتنظيف الشامل
+      await _connectionManager.cleanupAllConnections();
+      
+      // تنظيف إضافي للخرائط المحلية
+      _peers.clear();
+      _remoteStreams.clear();
+      _pendingCandidates.clear();
+      _connectionInProgress.clear();
+      _lastConnectionAttempt.clear();
+      _connectionStatus.clear();
+      
+      log('✅ تم التنظيف الشامل بنجاح');
+    } catch (e) {
+      log('❌ خطأ في التنظيف الشامل: $e');
+    }
+  }
+
   // دالة لإغلاق الاتصال بأمان
   Future<void> _safeClosePeerConnection(String peerId) async {
     try {

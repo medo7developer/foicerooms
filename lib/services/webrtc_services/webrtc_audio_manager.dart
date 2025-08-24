@@ -330,13 +330,28 @@ class WebRTCAudioManager {
         } catch (e) {
           log('❌ فشل في إضافة مسار صوتي $peerId: $e');
           
-          // معالجة أخطاء محددة
-          if (e.toString().contains('C++ addTrack failed')) {
-            log('❌ خطأ C++ addTrack - قد يكون الاتصال مغلق أو في حالة خاطئة');
+          // 🔥 معالجة شاملة لأخطاء addTrack المختلفة
+          if (e.toString().contains('C++ addTrack failed') || 
+              e.toString().contains('addTrack failed') ||
+              e.toString().contains('InvalidStateError')) {
+            log('❌ خطأ addTrack - الاتصال في حالة غير صحيحة');
             
-            // فحص حالة الاتصال مرة أخرى
+            // فحص شامل للحالة
             final currentState = await pc.getConnectionState();
-            log('🔍 حالة الاتصال الحالية: $currentState');
+            final signalingState = await pc.getSignalingState();
+            final iceState = await pc.getIceConnectionState();
+            
+            log('🔍 حالة التشخيص:');
+            log('   - Connection: $currentState');
+            log('   - Signaling: $signalingState');
+            log('   - ICE: $iceState');
+            
+            // إذا كان الاتصال مغلق، لا نتابع
+            if (currentState == RTCPeerConnectionState.RTCPeerConnectionStateClosed ||
+                currentState == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+              log('💀 الاتصال مغلق أو فاشل - إيقاف إضافة المسارات');
+              throw Exception('Peer connection is closed or failed');
+            }
             
             if (currentState == RTCPeerConnectionState.RTCPeerConnectionStateClosed ||
                 currentState == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {

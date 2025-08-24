@@ -212,16 +212,22 @@ class _GameScreenState extends State<GameScreen>
   Future<void> _createConnectionsSequentially(List<Player> players) async {
     log('🔧 === بدء إنشاء peer connections متسلسلة محسنة ===');
 
-    // تنظيف أي اتصالات قديمة أولاً
+    // 🔥 تنظيف شامل لأي اتصالات قديمة أولاً لتجنب تسرب الذاكرة
     for (final player in players) {
       if (_webrtcService.hasPeer(player.id)) {
         log('🗑️ تنظيف اتصال قديم مع ${player.name}');
-        await _webrtcService.closePeerConnection(player.id);
+        try {
+          await _webrtcService.closePeerConnection(player.id);
+          // انتظار إضافي للتأكد من الإغلاق
+          await Future.delayed(const Duration(milliseconds: 300));
+        } catch (cleanupError) {
+          log('⚠️ خطأ في تنظيف اتصال ${player.name}: $cleanupError');
+        }
       }
     }
     
-    // انتظار للتأكد من التنظيف
-    await Future.delayed(const Duration(milliseconds: 800));
+    // انتظار للتأكد من التنظيف الكامل
+    await Future.delayed(const Duration(seconds: 1));
 
     // إنشاء الاتصالات بشكل متسلسل
     for (int i = 0; i < players.length; i++) {
@@ -236,52 +242,80 @@ class _GameScreenState extends State<GameScreen>
           continue;
         }
 
-        // إنشاء اتصال جديد مع معالجة محسنة للأخطاء
+        // 🔥 إنشاء اتصال واحد فقط مع تنظيف قوي للأخطاء
         int attempts = 0;
         const maxAttempts = 3;
+        bool connectionSuccess = false;
         
-        while (attempts < maxAttempts && !_webrtcService.hasPeer(player.id)) {
+        while (attempts < maxAttempts && !connectionSuccess) {
           attempts++;
           
           try {
             log('🔄 محاولة ${attempts}/${maxAttempts} لإنشاء peer connection مع ${player.name}');
             
+            // 🔥 تنظيف أي اتصال محتمل قبل الإنشاء
+            if (_webrtcService.hasPeer(player.id)) {
+              log('⚠️ تنظيف اتصال موجود قبل إعادة الإنشاء');
+              await _webrtcService.closePeerConnection(player.id);
+              await Future.delayed(const Duration(milliseconds: 500));
+            }
+            
+            // إنشاء الاتصال الجديد
             await _webrtcService.createPeerConnectionForPeer(player.id);
             
-            // انتظار والتحقق من النجاح
-            await Future.delayed(const Duration(milliseconds: 1000));
+            // انتظار أطول للاستقرار
+            await Future.delayed(const Duration(milliseconds: 1500));
             
+            // فحص شامل للنجاح
             if (_webrtcService.hasPeer(player.id)) {
-              // فحص صحة الاتصال
               final isHealthy = await _webrtcService.isPeerConnectionHealthy(player.id);
               log('🔍 صحة peer connection مع ${player.name}: $isHealthy');
               
-              if (isHealthy || attempts == maxAttempts) {
-                log('✅ تم إنشاء peer connection مع ${player.name} بنجاح (محاولة $attempts)');
+              if (isHealthy) {
+                log('✅ تم إنشاء peer connection لـ ${player.name} بنجاح');
+                connectionSuccess = true;
                 break;
-              } else if (attempts < maxAttempts) {
-                log('⚠️ اتصال غير صحي مع ${player.name} - إعادة محاولة');
-                await _webrtcService.closePeerConnection(player.id);
-                await Future.delayed(const Duration(milliseconds: 500));
+              } else {
+                log('🔍 حالة peer ${player.id} بعد الإنشاء: unhealthy');
+                if (attempts < maxAttempts) {
+                  log('⚠️ اتصال غير صحي مع ${player.name} - إعادة محاولة');
+                  await _webrtcService.closePeerConnection(player.id);
+                  // انتظار أطول قبل إعادة المحاولة
+                  await Future.delayed(Duration(seconds: attempts));
+                } else {
+                  log('❌ فشل نهائي في إنشاء اتصال صحي مع ${player.name}');
+                }
               }
             } else {
               log('❌ فشل إنشاء peer connection مع ${player.name} (محاولة $attempts)');
               if (attempts < maxAttempts) {
-                await Future.delayed(const Duration(milliseconds: 500 * attempts));
+                // تأخير متدرج
+                await Future.delayed(Duration(seconds: attempts));
               }
             }
             
           } catch (attemptError) {
             log('❌ خطأ في محاولة $attempts لـ ${player.name}: $attemptError');
+            
+            // تنظيف في حالة الخطأ
+            try {
+              if (_webrtcService.hasPeer(player.id)) {
+                await _webrtcService.closePeerConnection(player.id);
+              }
+            } catch (cleanError) {
+              log('⚠️ خطأ في التنظيف: $cleanError');
+            }
+            
             if (attempts < maxAttempts) {
-              await Future.delayed(const Duration(milliseconds: 500 * attempts));
+              await Future.delayed(Duration(seconds: attempts));
             }
           }
         }
 
-        // انتظار إضافي بين الاتصالات
+        // انتظار أطول بين الاتصالات لتجنب استنزاف الموارد
         if (i < players.length - 1) {
-          await Future.delayed(const Duration(milliseconds: 600));
+          await Future.delayed(const Duration(seconds: 2));
+          log('⏳ انتظار قبل إنشاء الاتصال التالي...');
         }
 
       } catch (e) {
@@ -1011,13 +1045,32 @@ class _GameScreenState extends State<GameScreen>
 
   @override
   void dispose() {
+    log('🔄 بدء تنظيف موارد GameScreen');
+    
+    // إلغاء جميع المؤقتات
     _timer?.cancel();
     _roundCheckTimer?.cancel();
     _connectionTimer?.cancel();
+    
+    // تنظيف الرسوم المتحركة
     _pulseController.dispose();
     _cardController.dispose();
-    _webrtcService.dispose();
-    _realtimeManager.dispose();
+    
+    // 🔥 تنظيف شامل لـ WebRTC لتجنب تسرب الذاكرة
+    try {
+      _webrtcService.dispose();
+    } catch (e) {
+      log('⚠️ خطأ في تنظيف WebRTC: $e');
+    }
+    
+    // تنظيف Realtime Manager
+    try {
+      _realtimeManager.dispose();
+    } catch (e) {
+      log('⚠️ خطأ في تنظيف RealtimeManager: $e');
+    }
+    
+    log('✅ تم تنظيف موارد GameScreen بنجاح');
     super.dispose();
   }
 }
