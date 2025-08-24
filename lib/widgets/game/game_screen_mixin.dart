@@ -353,7 +353,7 @@ mixin GameScreenMixin {
     }
   }
 
-// استبدال _handleOffer بـ _handleOfferRobust:
+// استبدال _handleOffer بـ _handleOfferRobust مع معالجة محسنة للتوقيت:
   Future<void> _handleOfferRobust(
       String fromPeer,
       Map<String, dynamic> data,
@@ -363,43 +363,126 @@ mixin GameScreenMixin {
     log('📥 معالجة offer من $fromPeer');
 
     try {
-      // 1. إنشاء أو إعادة تعيين peer connection
+      // 1. إنشاء أو إعادة تعيين peer connection مع تحقق من الحالة
       if (webrtcService.hasPeer(fromPeer)) {
         log('🔄 إغلاق peer connection موجود مع $fromPeer');
         await webrtcService.closePeerConnection(fromPeer);
-        await Future.delayed(const Duration(milliseconds: 300));
+        await Future.delayed(const Duration(milliseconds: 500)); // زيادة وقت الانتظار
       }
 
       log('🔧 إنشاء peer connection جديد لـ $fromPeer');
       await webrtcService.createPeerConnectionForPeer(fromPeer);
 
-      // 2. انتظار استقرار الاتصال
-      await Future.delayed(const Duration(milliseconds: 500));
+      // 2. انتظار استقرار الاتصال مع التحقق
+      await Future.delayed(const Duration(milliseconds: 800));
+      
+      // التحقق من إنشاء الاتصال بنجاح
+      if (!webrtcService.hasPeer(fromPeer)) {
+        throw Exception('فشل في إنشاء peer connection لـ $fromPeer');
+      }
 
-      // 3. تعيين remote description
+      // 3. تعيين remote description مع معالجة الأخطاء
       final offer = RTCSessionDescription(data['sdp'], data['type']);
-      await webrtcService.setRemoteDescription(fromPeer, offer);
-      log('✅ تم تعيين remote description للعرض من $fromPeer');
+      try {
+        await webrtcService.setRemoteDescription(fromPeer, offer);
+        log('✅ تم تعيين remote description للعرض من $fromPeer');
+      } catch (setRemoteError) {
+        log('❌ خطأ في تعيين remote description: $setRemoteError');
+        
+        // إعادة محاولة مع انتظار إضافي
+        await Future.delayed(const Duration(milliseconds: 500));
+        await webrtcService.setRemoteDescription(fromPeer, offer);
+        log('✅ تم تعيين remote description بعد إعادة المحاولة');
+      }
 
-      // 4. انتظار قبل إنشاء الإجابة
-      await Future.delayed(const Duration(milliseconds: 300));
+      // 4. انتظار استقرار signaling state
+      await _waitForSignalingState(webrtcService, fromPeer, 
+          RTCSignalingState.RTCSignalingStateHaveRemoteOffer, 
+          Duration(seconds: 3));
 
-      // 5. إنشاء وإرسال الإجابة
-      await webrtcService.createAnswer(fromPeer);
-      log('✅ تم إنشاء وإرسال answer لـ $fromPeer');
+      // 5. إنشاء وإرسال الإجابة مع معالجة للأخطاء
+      try {
+        await webrtcService.createAnswer(fromPeer);
+        log('✅ تم إنشاء وإرسال answer لـ $fromPeer');
+      } catch (answerError) {
+        log('❌ خطأ في إنشاء answer: $answerError');
+        
+        // إذا فشل إنشاء answer، قد تكون المشكلة في signaling state
+        if (answerError.toString().contains('signaling')) {
+          log('🔄 محاولة إعادة تعيين remote description وإنشاء answer');
+          
+          // انتظار إضافي وإعادة محاولة
+          await Future.delayed(const Duration(seconds: 1));
+          
+          try {
+            // إعادة تعيين remote description
+            await webrtcService.setRemoteDescription(fromPeer, offer);
+            await Future.delayed(const Duration(milliseconds: 500));
+            
+            // إنشاء answer مرة أخرى
+            await webrtcService.createAnswer(fromPeer);
+            log('✅ تم إنشاء answer بعد إعادة المحاولة');
+          } catch (retryAnswerError) {
+            log('❌ فشل إنشاء answer حتى بعد إعادة المحاولة: $retryAnswerError');
+            // لا نرمي الخطأ هنا - سنترك الاتصال يحاول لاحقاً
+          }
+        }
+      }
 
     } catch (e) {
       log('❌ خطأ في معالجة offer من $fromPeer: $e');
 
-      // محاولة إعادة الاتصال
+      // محاولة إعادة الاتصال مع انتظار أطول
       try {
+        log('🔄 محاولة إعادة الاتصال مع $fromPeer');
         await webrtcService.closePeerConnection(fromPeer);
-        await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(seconds: 1));
         await webrtcService.createPeerConnectionForPeer(fromPeer);
+        
+        // إعادة محاولة معالجة offer
+        await Future.delayed(const Duration(milliseconds: 500));
+        final retryOffer = RTCSessionDescription(data['sdp'], data['type']);
+        await webrtcService.setRemoteDescription(fromPeer, retryOffer);
+        await webrtcService.createAnswer(fromPeer);
+        
+        log('✅ تم معالجة offer بنجاح بعد إعادة الاتصال');
       } catch (retryError) {
-        log('❌ فشل في إعادة الاتصال: $retryError');
+        log('❌ فشل في إعادة الاتصال ومعالجة offer: $retryError');
       }
     }
+  }
+
+  // دالة مساعدة لانتظار signaling state محدد
+  Future<void> _waitForSignalingState(
+      WebRTCService webrtcService, 
+      String peerId, 
+      RTCSignalingState expectedState, 
+      Duration timeout) async {
+    
+    final endTime = DateTime.now().add(timeout);
+    
+    while (DateTime.now().isBefore(endTime)) {
+      if (!webrtcService.hasPeer(peerId)) {
+        log('⚠️ peer connection لا يوجد أثناء انتظار signaling state');
+        return;
+      }
+      
+      try {
+        final currentState = await webrtcService._peers[peerId]!.getSignalingState();
+        if (currentState == expectedState) {
+          log('✅ وصل signaling state إلى $expectedState لـ $peerId');
+          return;
+        }
+        
+        // انتظار قصير قبل المحاولة التالية
+        await Future.delayed(const Duration(milliseconds: 100));
+      } catch (e) {
+        log('❌ خطأ في فحص signaling state: $e');
+        break;
+      }
+    }
+    
+    log('⏰ انتهت مهلة انتظار signaling state $expectedState لـ $peerId');
   }
 
 // استبدال _handleAnswer بـ _handleAnswerRobust:

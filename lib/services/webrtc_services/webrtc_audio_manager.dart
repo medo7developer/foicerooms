@@ -265,7 +265,7 @@ class WebRTCAudioManager {
     }
   }
 
-  // إضافة المسارات المحلية للاتصال
+  // إضافة المسارات المحلية للاتصال مع معالجة محسنة للأخطاء
   Future<void> addLocalTracksToConnection(RTCPeerConnection pc, String peerId) async {
     final localStream = getLocalStream();
     if (localStream == null) {
@@ -278,17 +278,78 @@ class WebRTCAudioManager {
       final audioTracks = stream.getAudioTracks();
       log('🎤 إضافة ${audioTracks.length} مسارات صوتية محلية لـ $peerId');
 
+      // فحص إذا كانت هناك مسارات موجودة بالفعل
+      final senders = await pc.getSenders();
+      bool hasAudioSender = senders.any((sender) => 
+          sender.track?.kind == 'audio' && sender.track?.enabled == true);
+      
+      if (hasAudioSender) {
+        log('✅ مسار صوتي موجود بالفعل لـ $peerId');
+        return;
+      }
+
+      // التحقق من حالة الاتصال قبل إضافة المسارات
+      final connectionState = await pc.getConnectionState();
+      if (connectionState == RTCPeerConnectionState.RTCPeerConnectionStateClosed ||
+          connectionState == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        log('❌ حالة اتصال غير صحيحة لـ $peerId: $connectionState');
+        throw Exception('حالة اتصال غير صحيحة: $connectionState');
+      }
+
+      // إضافة المسارات مع معالجة للأخطاء
       for (final track in audioTracks) {
         // التأكد من تفعيل المسار
         track.enabled = true;
 
         try {
-          await pc.addTrack(track, stream);
-          log('✅ تم إضافة مسار صوتي محلي: ${track.id}');
+          // فحص إضافي لتجنب بعض الأخطاء
+          final trackId = track.id;
+          log('🗗️ محاولة إضافة مسار $trackId لـ $peerId');
+          
+          // التحقق من عدم وجود المسار بالفعل
+          bool trackExists = false;
+          for (final sender in senders) {
+            if (sender.track?.id == trackId) {
+              trackExists = true;
+              log('⚠️ المسار $trackId موجود بالفعل');
+              break;
+            }
+          }
+          
+          if (!trackExists) {
+            await pc.addTrack(track, stream).timeout(
+              const Duration(seconds: 5),
+              onTimeout: () {
+                log('⏰ timeout في إضافة المسار $trackId');
+                throw TimeoutException('timeout في إضافة المسار');
+              },
+            );
+            log('✅ تم إضافة مسار صوتي محلي: $trackId');
+          }
+          
         } catch (e) {
-          log('❌ فشل في إضافة مسار صوتي: $e');
+          log('❌ فشل في إضافة مسار صوتي $peerId: $e');
+          
+          // معالجة أخطاء محددة
+          if (e.toString().contains('C++ addTrack failed')) {
+            log('❌ خطأ C++ addTrack - قد يكون الاتصال مغلق أو في حالة خاطئة');
+            
+            // فحص حالة الاتصال مرة أخرى
+            final currentState = await pc.getConnectionState();
+            log('🔍 حالة الاتصال الحالية: $currentState');
+            
+            if (currentState == RTCPeerConnectionState.RTCPeerConnectionStateClosed ||
+                currentState == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+              throw Exception('الاتصال في حالة غير صحيحة: $currentState');
+            }
+          }
+          
+          // لا نرمي الخطأ هنا - سنحاول إضافة المسار لاحقاً
         }
       }
+    } else {
+      log('❌ لا يزال لا يوجد مجرى صوتي محلي بعد إعادة التهيئة');
+      throw Exception('فشل في الحصول على مجرى صوتي محلي');
     }
   }
 

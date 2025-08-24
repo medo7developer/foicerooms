@@ -167,7 +167,7 @@ class SignalingService {
     }
   }
 
-// تحسين دالة sendSignal لضمان التسليم:
+// تحسين دالة sendSignal لضمان التسليم مع معالجة محسنة:
   Future<bool> sendSignal({
     required String roomId,
     required String fromPeer,
@@ -175,12 +175,13 @@ class SignalingService {
     required String type,
     required Map<String, dynamic> data,
   }) async {
-    int maxRetries = 5; // زيادة عدد المحاولات
+    // تقليل عدد المحاولات لتسريع العملية
+    int maxRetries = 3; 
     int retryCount = 0;
 
     while (retryCount < maxRetries) {
       try {
-        // محاولة الإرسال الأساسية
+        // تقليل timeout لتسريع الاستجابة
         final result = await _client.from('signaling').insert({
           'room_id': roomId,
           'from_peer': fromPeer,
@@ -188,34 +189,59 @@ class SignalingService {
           'type': type,
           'data': data,
           'created_at': DateTime.now().toIso8601String(),
-        }).select().timeout(const Duration(seconds: 8));
+        }).select().timeout(const Duration(seconds: 5));
 
         if (result.isNotEmpty) {
-          log('✅ تم إرسال إشارة $type من $fromPeer إلى $toPeer');
+          log('✅ تم إرسال إشارة $type من $fromPeer إلى $toPeer بنجاح');
 
-          // تأكيد إضافي بعد تأخير قصير
-          Future.delayed(const Duration(milliseconds: 200), () {
-            _verifySignalDelivery(roomId, fromPeer, toPeer, type);
-          });
+          // إزالة التحقق الإضافي لتقليل التأخير
+          // Future.delayed(const Duration(milliseconds: 200), () {
+          //   _verifySignalDelivery(roomId, fromPeer, toPeer, type);
+          // });
 
           return true;
         }
 
       } catch (e) {
         retryCount++;
-        log('❌ فشل إرسال الإشارة (محاولة $retryCount/$maxRetries): $e');
+        
+        // معالجة أنواع مختلفة من الأخطاء
+        if (e.toString().toLowerCase().contains('timeout')) {
+          log('⏰ timeout في إرسال إشارة $type (محاولة $retryCount/$maxRetries)');
+        } else if (e.toString().toLowerCase().contains('network') || 
+                   e.toString().toLowerCase().contains('connection')) {
+          log('🌐 خطأ شبكة في إرسال إشارة $type (محاولة $retryCount/$maxRetries)');
+        } else {
+          log('❌ خطأ في إرسال إشارة $type (محاولة $retryCount/$maxRetries): $e');
+        }
 
         if (retryCount < maxRetries) {
-          // انتظار متزايد مع jitter
-          final delay = Duration(milliseconds: (retryCount * 1000) + (DateTime.now().millisecond % 500));
+          // تقليل وقت الانتظار لتسريع العملية
+          final delay = Duration(milliseconds: 300 + (retryCount * 200));
           await Future.delayed(delay);
+        } else {
+          // في حالة فشل جميع المحاولات، نحاول الحل البديل فوراً
+          log('🔄 جميع محاولات الإرسال الأساسي فشلت، انتقال للحل البديل');
+          break;
         }
       }
     }
 
-    // إذا فشلت جميع المحاولات، استخدم الحل البديل
-    log('🔄 استخدام الحل البديل لإرسال إشارة $type');
-    return await _sendSignalViaAlternativeMethod(roomId, fromPeer, toPeer, type, data);
+    // استخدام الحل البديل فوراً بدون تأخير
+    log('🔄 تجربة الحل البديل لإرسال إشارة $type');
+    
+    try {
+      final alternativeResult = await _sendSignalViaAlternativeMethod(roomId, fromPeer, toPeer, type, data);
+      if (alternativeResult) {
+        log('✅ تم إرسال إشارة $type عبر الحل البديل');
+        return true;
+      }
+    } catch (altError) {
+      log('❌ فشل الحل البديل أيضاً: $altError');
+    }
+
+    log('❌ فشل إرسال إشارة $type من $fromPeer إلى $toPeer نهائياً');
+    return false;
   }
 
 // التحقق من تسليم الإشارة

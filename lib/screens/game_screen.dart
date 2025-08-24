@@ -208,46 +208,90 @@ class _GameScreenState extends State<GameScreen>
     }
   }
 
-// دالة إنشاء اتصالات متسلسلة محسنة:
+// دالة إنشاء اتصالات متسلسلة محسنة مع معالجة محسنة:
   Future<void> _createConnectionsSequentially(List<Player> players) async {
-    log('🔧 === بدء إنشاء peer connections متسلسلة ===');
+    log('🔧 === بدء إنشاء peer connections متسلسلة محسنة ===');
 
+    // تنظيف أي اتصالات قديمة أولاً
+    for (final player in players) {
+      if (_webrtcService.hasPeer(player.id)) {
+        log('🗑️ تنظيف اتصال قديم مع ${player.name}');
+        await _webrtcService.closePeerConnection(player.id);
+      }
+    }
+    
+    // انتظار للتأكد من التنظيف
+    await Future.delayed(const Duration(milliseconds: 800));
+
+    // إنشاء الاتصالات بشكل متسلسل
     for (int i = 0; i < players.length; i++) {
       final player = players[i];
 
       try {
-        log('🔗 إنشاء peer connection مع ${player.name} (${i + 1}/${players.length})');
+        log('🔗 بدء إنشاء peer connection مع ${player.name} (${i + 1}/${players.length})');
 
-        // إغلاق أي اتصال قديم أولاً
+        // التحقق من عدم وجود اتصال مسبق
         if (_webrtcService.hasPeer(player.id)) {
-          await _webrtcService.closePeerConnection(player.id);
-          await Future.delayed(const Duration(milliseconds: 300));
+          log('⚠️ اتصال موجود بالفعل مع ${player.name} - تجاهل');
+          continue;
         }
 
-        // إنشاء اتصال جديد
-        await _webrtcService.createPeerConnectionForPeer(player.id);
-
-        // انتظار أطول للاستقرار
-        await Future.delayed(const Duration(milliseconds: 1500));
-
-        // التحقق من نجاح الإنشاء
-        if (_webrtcService.hasPeer(player.id)) {
-          log('✅ تم إنشاء peer connection مع ${player.name} بنجاح');
-        } else {
-          log('❌ فشل إنشاء peer connection مع ${player.name}');
+        // إنشاء اتصال جديد مع معالجة محسنة للأخطاء
+        int attempts = 0;
+        const maxAttempts = 3;
+        
+        while (attempts < maxAttempts && !_webrtcService.hasPeer(player.id)) {
+          attempts++;
+          
+          try {
+            log('🔄 محاولة ${attempts}/${maxAttempts} لإنشاء peer connection مع ${player.name}');
+            
+            await _webrtcService.createPeerConnectionForPeer(player.id);
+            
+            // انتظار والتحقق من النجاح
+            await Future.delayed(const Duration(milliseconds: 1000));
+            
+            if (_webrtcService.hasPeer(player.id)) {
+              // فحص صحة الاتصال
+              final isHealthy = await _webrtcService.isPeerConnectionHealthy(player.id);
+              log('🔍 صحة peer connection مع ${player.name}: $isHealthy');
+              
+              if (isHealthy || attempts == maxAttempts) {
+                log('✅ تم إنشاء peer connection مع ${player.name} بنجاح (محاولة $attempts)');
+                break;
+              } else if (attempts < maxAttempts) {
+                log('⚠️ اتصال غير صحي مع ${player.name} - إعادة محاولة');
+                await _webrtcService.closePeerConnection(player.id);
+                await Future.delayed(const Duration(milliseconds: 500));
+              }
+            } else {
+              log('❌ فشل إنشاء peer connection مع ${player.name} (محاولة $attempts)');
+              if (attempts < maxAttempts) {
+                await Future.delayed(const Duration(milliseconds: 500 * attempts));
+              }
+            }
+            
+          } catch (attemptError) {
+            log('❌ خطأ في محاولة $attempts لـ ${player.name}: $attemptError');
+            if (attempts < maxAttempts) {
+              await Future.delayed(const Duration(milliseconds: 500 * attempts));
+            }
+          }
         }
 
         // انتظار إضافي بين الاتصالات
         if (i < players.length - 1) {
-          await Future.delayed(const Duration(milliseconds: 800));
+          await Future.delayed(const Duration(milliseconds: 600));
         }
 
       } catch (e) {
-        log('❌ خطأ في إنشاء peer connection مع ${player.id}: $e');
+        log('❌ خطأ عام في إنشاء peer connection مع ${player.id}: $e');
       }
     }
 
-    log('✅ === انتهى إنشاء peer connections ===');
+    // إحصائيات نهائية
+    final successfulConnections = players.where((p) => _webrtcService.hasPeer(p.id)).length;
+    log('✅ === انتهى إنشاء peer connections: ${successfulConnections}/${players.length} نجحت ===');
   }
 
 // دالة إرسال offers محسنة مع مراقبة الاستجابة:

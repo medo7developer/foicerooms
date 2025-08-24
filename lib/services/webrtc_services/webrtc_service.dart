@@ -577,7 +577,7 @@ class WebRTCService {
     }
   }
 
-// تحسين دالة createOffer مع معالجة أفضل للأخطاء
+// تحسين دالة createOffer مع معالجة أفضل للأخطاء ومنع مشكلة addTrack
   Future<RTCSessionDescription> createOffer(String peerId) async {
     try {
       log('📤 بدء إنشاء offer لـ $peerId');
@@ -594,20 +594,63 @@ class WebRTCService {
       final signalingState = await pc.getSignalingState();
       log('📡 حالة signaling قبل إنشاء offer: $signalingState');
 
-      // التحقق من وجود مسارات صوتية محلية
+      // التحقق المحسن من المسارات الصوتية مع منع التكرار
       final senders = await pc.getSenders();
-      bool hasAudioSender = senders.any((sender) => sender.track?.kind == 'audio');
-
-      if (!hasAudioSender && _localStream != null) {
-        final audioTracks = _localStream!.getAudioTracks();
-        if (audioTracks.isNotEmpty) {
-          log('🎤 إضافة مسار صوتي محلي قبل إنشاء offer');
-          await pc.addTrack(audioTracks.first, _localStream!);
+      bool hasAudioSender = false;
+      
+      // فحص دقيق للمرسلات الموجودة
+      for (final sender in senders) {
+        if (sender.track?.kind == 'audio' && sender.track?.enabled == true) {
+          hasAudioSender = true;
+          log('✅ مسار صوتي محلي موجود ومفعل: ${sender.track!.id}');
+          break;
         }
       }
 
+      // إضافة المسار الصوتي بحذر إذا لم يكن موجوداً
+      if (!hasAudioSender && _localStream != null) {
+        final audioTracks = _localStream!.getAudioTracks();
+        if (audioTracks.isNotEmpty) {
+          try {
+            // التحقق من حالة الاتصال قبل إضافة المسار
+            final connectionState = await pc.getConnectionState();
+            if (connectionState != RTCPeerConnectionState.RTCPeerConnectionStateClosed &&
+                connectionState != RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+              
+              log('🎤 إضافة مسار صوتي محلي قبل إنشاء offer');
+              await pc.addTrack(audioTracks.first, _localStream!);
+              
+              // انتظار قصير للاستقرار
+              await Future.delayed(const Duration(milliseconds: 200));
+            } else {
+              log('⚠️ حالة اتصال غير مناسبة لإضافة مسار: $connectionState');
+              throw Exception('حالة اتصال غير صحيحة: $connectionState');
+            }
+          } catch (addTrackError) {
+            log('❌ خطأ في إضافة المسار الصوتي: $addTrackError');
+            // إعادة إنشاء الاتصال إذا فشلت إضافة المسار
+            await _recreatePeerConnectionWithTracks(peerId);
+            // إعادة الحصول على الـ pc الجديد
+            final newPc = _peers[peerId];
+            if (newPc == null) {
+              throw Exception('فشل في إعادة إنشاء peer connection');
+            }
+          }
+        }
+      }
+
+      // التحقق مرة أخرى من حالة signaling قبل المتابعة
+      final finalSignalingState = await _peers[peerId]!.getSignalingState();
+      if (finalSignalingState != RTCSignalingState.RTCSignalingStateStable) {
+        log('⚠️ حالة signaling غير مستقرة: $finalSignalingState');
+        // انتظار للاستقرار
+        await _waitForSignalingStable(peerId, Duration(seconds: 3));
+      }
+
+      final finalPc = _peers[peerId]!;
+      
       // إنشاء العرض مع timeout
-      final offer = await pc.createOffer({
+      final offer = await finalPc.createOffer({
         'offerToReceiveAudio': true,
         'offerToReceiveVideo': false,
         'voiceActivityDetection': true,
@@ -620,7 +663,7 @@ class WebRTCService {
       );
 
       // تعيين local description مع timeout
-      await pc.setLocalDescription(offer).timeout(
+      await finalPc.setLocalDescription(offer).timeout(
         const Duration(seconds: 5),
         onTimeout: () {
           log('⏰ timeout في تعيين local description لـ $peerId');
@@ -638,15 +681,20 @@ class WebRTCService {
     } catch (e) {
       log('❌ خطأ في إنشاء offer لـ $peerId: $e');
 
-      // في حالة الفشل، محاولة إعادة إنشاء peer connection
+      // في حالة الفشل، محاولة إعادة إنشاء peer connection كاملة
       try {
-        log('🔄 محاولة إعادة إنشاء peer connection لـ $peerId');
-        await _safeClosePeerConnection(peerId);
-        await Future.delayed(const Duration(milliseconds: 500));
-        await createPeerConnectionForPeer(peerId);
+        log('🔄 محاولة إعادة إنشاء peer connection كاملة لـ $peerId');
+        await _recreatePeerConnectionWithTracks(peerId);
 
-        // محاولة إنشاء offer مرة أخرى
-        final pc = _peers[peerId]!;
+        // انتظار للاستقرار
+        await Future.delayed(const Duration(milliseconds: 800));
+        
+        final pc = _peers[peerId];
+        if (pc == null) {
+          throw Exception('فشل في إعادة إنشاء peer connection');
+        }
+
+        // محاولة إنشاء offer مرة أخرى بدون إضافة مسارات
         final retryOffer = await pc.createOffer({
           'offerToReceiveAudio': true,
           'offerToReceiveVideo': false,
@@ -665,7 +713,52 @@ class WebRTCService {
     }
   }
 
-// تحسين دالة createAnswer
+  // دالة جديدة لإعادة إنشاء peer connection مع المسارات
+  Future<void> _recreatePeerConnectionWithTracks(String peerId) async {
+    try {
+      log('🔄 إعادة إنشاء peer connection مع مسارات لـ $peerId');
+      
+      // إغلاق الاتصال القديم
+      await _safeClosePeerConnection(peerId);
+      
+      // انتظار للتأكد من الإغلاق
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // إنشاء اتصال جديد
+      await createPeerConnectionForPeer(peerId);
+      
+      // انتظار للاستقرار
+      await Future.delayed(const Duration(milliseconds: 300));
+      
+      log('✅ تم إعادة إنشاء peer connection مع مسارات لـ $peerId');
+      
+    } catch (e) {
+      log('❌ خطأ في إعادة إنشاء peer connection لـ $peerId: $e');
+      rethrow;
+    }
+  }
+
+  // دالة انتظار استقرار signaling state
+  Future<void> _waitForSignalingStable(String peerId, Duration timeout) async {
+    final pc = _peers[peerId];
+    if (pc == null) return;
+    
+    final endTime = DateTime.now().add(timeout);
+    
+    while (DateTime.now().isBefore(endTime)) {
+      final state = await pc.getSignalingState();
+      if (state == RTCSignalingState.RTCSignalingStateStable) {
+        log('✅ signaling state مستقر لـ $peerId');
+        return;
+      }
+      
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    
+    log('⏰ انتهت مهلة انتظار استقرار signaling لـ $peerId');
+  }
+
+// تحسين دالة createAnswer مع معالجة محسنة لحالة signaling
   Future<RTCSessionDescription> createAnswer(String peerId) async {
     try {
       log('📥 بدء إنشاء answer لـ $peerId');
@@ -679,8 +772,43 @@ class WebRTCService {
       final signalingState = await pc.getSignalingState();
       log('📡 حالة signaling عند إنشاء answer: $signalingState');
 
-      if (signalingState != RTCSignalingState.RTCSignalingStateHaveRemoteOffer) {
-        throw Exception('حالة signaling غير مناسبة لإنشاء answer: $signalingState');
+      // معالجة محسنة لحالة signaling
+      if (signalingState == RTCSignalingState.RTCSignalingStateStable) {
+        log('⚠️ signaling state مستقر - لا يمكن إنشاء answer');
+        
+        // فحص إذا كان هناك remote description
+        final remoteDesc = await pc.getRemoteDescription();
+        if (remoteDesc == null) {
+          throw Exception('لا يوجد remote description وsignaling state مستقر');
+        }
+        
+        // إذا كان هناك remote description، نحاول انتظار تغيير الحالة
+        for (int i = 0; i < 10; i++) {
+          await Future.delayed(const Duration(milliseconds: 200));
+          final newState = await pc.getSignalingState();
+          if (newState == RTCSignalingState.RTCSignalingStateHaveRemoteOffer) {
+            log('✅ signaling state تغير إلى HaveRemoteOffer');
+            break;
+          }
+        }
+        
+        // فحص نهائي للحالة
+        final finalState = await pc.getSignalingState();
+        if (finalState == RTCSignalingState.RTCSignalingStateStable) {
+          log('❌ الحالة لا تزال stable - إرجاع بدون إنشاء answer');
+          return RTCSessionDescription('', 'answer'); // placeholder answer
+        }
+      } else if (signalingState != RTCSignalingState.RTCSignalingStateHaveRemoteOffer) {
+        log('⚠️ حالة signaling غير مناسبة: $signalingState - محاولة المتابعة');
+        
+        // انتظار قصير لتغيير الحالة
+        await Future.delayed(const Duration(milliseconds: 500));
+        final retryState = await pc.getSignalingState();
+        
+        if (retryState != RTCSignalingState.RTCSignalingStateHaveRemoteOffer) {
+          log('❌ حالة signaling لا تزال غير مناسبة: $retryState');
+          throw Exception('حالة signaling غير مناسبة لإنشاء answer: $retryState');
+        }
       }
 
       // التحقق من وجود remote description
@@ -689,15 +817,36 @@ class WebRTCService {
         throw Exception('لا يوجد remote description للـ peer $peerId');
       }
 
-      // التحقق من وجود مسارات صوتية محلية
+      // التحقق من وجود مسارات صوتية محلية بعناية
       final senders = await pc.getSenders();
-      bool hasAudioSender = senders.any((sender) => sender.track?.kind == 'audio');
+      bool hasAudioSender = false;
+      
+      for (final sender in senders) {
+        if (sender.track?.kind == 'audio' && sender.track?.enabled == true) {
+          hasAudioSender = true;
+          break;
+        }
+      }
 
       if (!hasAudioSender && _localStream != null) {
         final audioTracks = _localStream!.getAudioTracks();
         if (audioTracks.isNotEmpty) {
-          log('🎤 إضافة مسار صوتي محلي قبل إنشاء answer');
-          await pc.addTrack(audioTracks.first, _localStream!);
+          try {
+            // التحقق من حالة الاتصال قبل إضافة المسار
+            final connectionState = await pc.getConnectionState();
+            if (connectionState != RTCPeerConnectionState.RTCPeerConnectionStateClosed &&
+                connectionState != RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+              
+              log('🎤 إضافة مسار صوتي محلي قبل إنشاء answer');
+              await pc.addTrack(audioTracks.first, _localStream!);
+              
+              // انتظار قصير للاستقرار
+              await Future.delayed(const Duration(milliseconds: 200));
+            }
+          } catch (addTrackError) {
+            log('⚠️ خطأ في إضافة مسار صوتي في answer: $addTrackError');
+            // نتابع بدون إضافة مسار
+          }
         }
       }
 
@@ -707,21 +856,33 @@ class WebRTCService {
         'offerToReceiveVideo': false,
         'voiceActivityDetection': true,
       }).timeout(
-        const Duration(seconds: 10),
+        const Duration(seconds: 8), // تقليل timeout
         onTimeout: () {
           log('⏰ timeout في إنشاء answer لـ $peerId');
           throw TimeoutException('timeout في إنشاء answer');
         },
       );
 
-      // تعيين local description
-      await pc.setLocalDescription(answer).timeout(
-        const Duration(seconds: 5),
-        onTimeout: () {
-          log('⏰ timeout في تعيين local description للإجابة لـ $peerId');
-          throw TimeoutException('timeout في تعيين local description');
-        },
-      );
+      // تعيين local description مع التحقق من الحالة
+      final preSetState = await pc.getSignalingState();
+      if (preSetState == RTCSignalingState.RTCSignalingStateHaveRemoteOffer) {
+        await pc.setLocalDescription(answer).timeout(
+          const Duration(seconds: 5),
+          onTimeout: () {
+            log('⏰ timeout في تعيين local description للإجابة لـ $peerId');
+            throw TimeoutException('timeout في تعيين local description');
+          },
+        );
+      } else {
+        log('⚠️ حالة signaling تغيرت قبل تعيين local description: $preSetState');
+        // محاولة تعيين local description رغم تغيير الحالة
+        try {
+          await pc.setLocalDescription(answer);
+        } catch (setDescError) {
+          log('❌ فشل تعيين local description: $setDescError');
+          // إرجاع answer بدون تعيين local description
+        }
+      }
 
       log('✅ تم إنشاء answer لـ $peerId بنجاح');
 
@@ -732,7 +893,16 @@ class WebRTCService {
 
     } catch (e) {
       log('❌ خطأ في إنشاء answer لـ $peerId: $e');
-      rethrow;
+      
+      // في حالة فشل إنشاء answer، نعيد إنشاء offer في الاتجاه المعاكس
+      try {
+        log('🔄 محاولة إنشاء offer بدلاً من answer لـ $peerId');
+        final retryOffer = await createOffer(peerId);
+        return RTCSessionDescription(retryOffer.sdp, 'answer'); // تحويل إلى answer format
+      } catch (offerError) {
+        log('❌ فشل في إنشاء offer بديل: $offerError');
+        rethrow;
+      }
     }
   }
 

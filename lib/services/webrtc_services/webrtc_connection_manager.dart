@@ -100,8 +100,14 @@ class WebRTCConnectionManager {
       // إعداد معالجات الأحداث قبل إضافة المسارات
       _setupPeerConnectionHandlers(pc, peerId, signalingCallbacks);
 
-      // إضافة المسارات الصوتية المحلية
-      await _audioManager.addLocalTracksToConnection(pc, peerId);
+      // إضافة المسارات الصوتية المحلية مع معالجة محسنة للأخطاء
+      try {
+        await _audioManager.addLocalTracksToConnection(pc, peerId);
+      } catch (addTrackError) {
+        log('⚠️ خطأ في إضافة المسارات الصوتية لـ $peerId: $addTrackError');
+        // نتابع بدون المسارات الصوتية في الوقت الحالي
+        // سيتم إضافتها لاحقاً عند إنشاء offer/answer
+      }
 
       peers[peerId] = pc;
       log('✅ تم إنشاء peer connection للـ $peerId بنجاح');
@@ -309,7 +315,7 @@ class WebRTCConnectionManager {
     }
   }
 
-// دالة محسنة لإضافة ICE candidate مع معالجة أفضل للتوقيت
+// دالة محسنة لإضافة ICE candidate مع معالجة محسنة للتوقيت
   Future<void> addIceCandidate(String peerId, RTCIceCandidate candidate) async {
     try {
       final pc = peers[peerId];
@@ -319,34 +325,62 @@ class WebRTCConnectionManager {
         return;
       }
 
-      // التحقق من حالة الـ signaling
+      // التحقق من حالة الـ signaling والاتصال
       final signalingState = await pc.getSignalingState();
+      final connectionState = await pc.getConnectionState();
+      final iceState = await pc.getIceConnectionState();
       final remoteDesc = await pc.getRemoteDescription();
       
-      // شروط محسنة لإضافة ICE candidate
-      final canAddCandidate = remoteDesc != null && 
-          (signalingState == RTCSignalingState.RTCSignalingStateStable ||
-           signalingState == RTCSignalingState.RTCSignalingStateHaveRemoteOffer ||
-           signalingState == RTCSignalingState.RTCSignalingStateHaveLocalOffer);
-
+      // تحقق أشمل من صحة الاتصال
+      final isConnectionHealthy = connectionState != RTCPeerConnectionState.RTCPeerConnectionStateClosed &&
+                                 connectionState != RTCPeerConnectionState.RTCPeerConnectionStateFailed &&
+                                 iceState != RTCIceConnectionState.RTCIceConnectionStateClosed &&
+                                 iceState != RTCIceConnectionState.RTCIceConnectionStateFailed;
+      
+      if (!isConnectionHealthy) {
+        log('❌ اتصال غير صحي لـ $peerId - حالة: $connectionState, ICE: $iceState');
+        _addPendingCandidate(peerId, candidate);
+        return;
+      }
+      
+      // شروط محسنة ومرنة أكثر لإضافة ICE candidate
+      final canAddCandidate = remoteDesc != null;
+      
+      // إذا كان signaling state غير مناسب ولكن الاتصال صحي، نحاول الإضالة مع تأخير قصير
       if (!canAddCandidate) {
-        log('⚠️ لا يمكن إضافة ICE candidate الآن لـ $peerId (حالة: $signalingState، remoteDesc: ${remoteDesc != null})، تأجيل');
+        log('⚠️ لا يمكن إضافم ICE candidate الآن لـ $peerId (signaling: $signalingState, remoteDesc: ${remoteDesc != null})');
         _addPendingCandidate(peerId, candidate);
         
-        // محاولة معالجة بعد تأخير
-        Future.delayed(const Duration(milliseconds: 1000), () {
+        // محاولة معالجة بعد تأخير قصير جداً
+        Future.delayed(const Duration(milliseconds: 300), () {
           _processPendingCandidates(peerId);
         });
         return;
       }
-
-      // إضافة candidate مع retry في حالة الفشل
-      await _addCandidateWithRetry(pc, candidate, peerId);
-      log('✅ تم إضافة ICE candidate لـ $peerId (حالة: $signalingState)');
+      
+      // محاولة إضافة فورية مع معالجة للأخطاء
+      try {
+        await _addCandidateWithRetry(pc, candidate, peerId);
+        log('✅ تم إضافة ICE candidate لـ $peerId فوراً (حالة: $signalingState)');
+      } catch (immediateError) {
+        // إذا فشلت الإضافة الفورية، نؤجل مع تسجيل الخطأ
+        log('⚠️ فشلت الإضافة الفورية لـ $peerId: $immediateError - تأجيل');
+        _addPendingCandidate(peerId, candidate);
+        
+        // جدولة معالجة بعد وقت قصير جداً
+        Future.delayed(const Duration(milliseconds: 200), () {
+          _processPendingCandidates(peerId);
+        });
+      }
 
     } catch (e) {
-      log('❌ خطأ في إضافة ICE candidate لـ $peerId: $e');
+      log('❌ خطأ عام في معالجة ICE candidate لـ $peerId: $e');
       _addPendingCandidate(peerId, candidate);
+      
+      // جدولة معالجة بعد تأخير إضافي
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _processPendingCandidates(peerId);
+      });
     }
   }
 
