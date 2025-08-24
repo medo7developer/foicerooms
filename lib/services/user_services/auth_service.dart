@@ -125,6 +125,27 @@ class AuthService {
   // التحقق من حالة تسجيل الدخول
   Future<bool> checkAuthStatus() async {
     try {
+      // أولاً محاولة تحميل من التخزين المحلي
+      final savedUser = await _loadUserLocally();
+      if (savedUser != null) {
+        _currentUser = savedUser;
+        log('تم تحميل المستخدم من التخزين المحلي: ${savedUser.displayName}');
+
+        // التحقق من جلسة Supabase في الخلفية
+        final session = _supabase.auth.currentSession;
+        if (session?.user != null) {
+          // تحديث البيانات من قاعدة البيانات
+          final updatedUser = await _getUserFromDatabase(session!.user.id);
+          if (updatedUser != null) {
+            _currentUser = updatedUser;
+            await _saveUserLocally(updatedUser);
+          }
+        }
+
+        return true;
+      }
+
+      // إذا لم يكن هناك مستخدم محفوظ، تحقق من جلسة Supabase
       final session = _supabase.auth.currentSession;
       if (session?.user != null) {
         _currentUser = await _getUserFromDatabase(session!.user.id);
@@ -132,13 +153,9 @@ class AuthService {
           // إنشاء المستخدم إذا لم يكن موجوداً
           _currentUser = await _createOrUpdateUser(session.user);
         }
-        return true;
-      }
 
-      // محاولة تحميل من التخزين المحلي
-      final savedUser = await _loadUserLocally();
-      if (savedUser != null) {
-        _currentUser = savedUser;
+        // حفظ المستخدم محلياً
+        await _saveUserLocally(_currentUser!);
         return true;
       }
 
@@ -177,7 +194,11 @@ class AuthService {
         await _supabase.from('users').insert(userData);
         log('تم إنشاء مستخدم جديد: ${userData['display_name']}');
       } else {
-        // تحديث المستخدم الموجود
+        // تحديث المستخدم الموجود - احتفاظ بحالة الملف الشخصي
+        userData['is_profile_complete'] = existingUser['is_profile_complete'] ?? false;
+        userData['custom_avatar_path'] = existingUser['custom_avatar_path'];
+        userData['created_at'] = existingUser['created_at'];
+
         await _supabase.from('users')
             .update(userData)
             .eq('id', supabaseUser.id);
@@ -202,6 +223,7 @@ class AuthService {
         photoURL: supabaseUser.userMetadata?['avatar_url'],
         createdAt: DateTime.now(),
         lastLoginAt: DateTime.now(),
+        isProfileComplete: false, // التأكد من أنه false للمستخدمين الجدد
       );
     }
   }
@@ -253,6 +275,8 @@ class AuthService {
       if (displayName != null) updateData['display_name'] = displayName;
       if (uploadedAvatarPath != null) updateData['custom_avatar_path'] = uploadedAvatarPath;
       if (customAvatarPath != null) updateData['custom_avatar_path'] = customAvatarPath;
+
+      // هذا هو الأهم - تحديد أن الملف الشخصي مكتمل
       updateData['is_profile_complete'] = true;
 
       if (updateData.isNotEmpty) {
@@ -264,11 +288,12 @@ class AuthService {
         _currentUser = _currentUser!.copyWith(
           displayName: displayName ?? _currentUser!.displayName,
           customAvatarPath: uploadedAvatarPath ?? customAvatarPath ?? _currentUser!.customAvatarPath,
-          isProfileComplete: true,
+          isProfileComplete: true, // التأكد من تحديث هذا
         );
 
+        // حفظ البيانات المحدثة محلياً
         await _saveUserLocally(_currentUser!);
-        log('تم تحديث ملف المستخدم الشخصي');
+        log('تم تحديث ملف المستخدم الشخصي - الملف مكتمل: ${_currentUser!.isProfileComplete}');
         return true;
       }
 
@@ -279,47 +304,80 @@ class AuthService {
     }
   }
 
-  // حفظ المستخدم محلياً
+  // حفظ المستخدم محلياً - طريقة محسنة
   Future<void> _saveUserLocally(UserModel user) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final userJson = user.toJson();
-      final entries = userJson.entries.map((e) => '${e.key}:${e.value}').join('|');
-      await prefs.setString('current_user', entries);
+
+      // حفظ كل قيمة بشكل منفصل لضمان الدقة
+      await prefs.setString('user_id', user.id);
+      await prefs.setString('user_email', user.email);
+      await prefs.setString('user_display_name', user.displayName);
+      await prefs.setString('user_photo_url', user.photoURL ?? '');
+      await prefs.setString('user_custom_avatar_path', user.customAvatarPath ?? '');
+      await prefs.setString('user_created_at', user.createdAt.toIso8601String());
+      await prefs.setString('user_last_login_at', user.lastLoginAt.toIso8601String());
+      await prefs.setBool('user_is_profile_complete', user.isProfileComplete);
+
+      log('تم حفظ المستخدم محلياً - الملف مكتمل: ${user.isProfileComplete}');
     } catch (e) {
       log('خطأ في حفظ المستخدم محلياً: $e');
     }
   }
 
-  // تحميل المستخدم محلياً
+  // تحميل المستخدم محلياً - طريقة محسنة
   Future<UserModel?> _loadUserLocally() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final userString = prefs.getString('current_user');
-      if (userString == null) return null;
 
-      final userMap = <String, dynamic>{};
-      for (final entry in userString.split('|')) {
-        final parts = entry.split(':');
-        if (parts.length == 2) {
-          userMap[parts[0]] = parts[1];
-        }
-      }
+      final userId = prefs.getString('user_id');
+      if (userId == null) return null;
 
-      if (userMap.isNotEmpty) {
-        return UserModel.fromJson(userMap);
-      }
+      final email = prefs.getString('user_email') ?? '';
+      final displayName = prefs.getString('user_display_name') ?? '';
+      final photoURL = prefs.getString('user_photo_url');
+      final customAvatarPath = prefs.getString('user_custom_avatar_path');
+      final createdAtStr = prefs.getString('user_created_at');
+      final lastLoginAtStr = prefs.getString('user_last_login_at');
+      final isProfileComplete = prefs.getBool('user_is_profile_complete') ?? false;
+
+      if (createdAtStr == null || lastLoginAtStr == null) return null;
+
+      final user = UserModel(
+        id: userId,
+        email: email,
+        displayName: displayName,
+        photoURL: photoURL?.isEmpty == true ? null : photoURL,
+        customAvatarPath: customAvatarPath?.isEmpty == true ? null : customAvatarPath,
+        createdAt: DateTime.parse(createdAtStr),
+        lastLoginAt: DateTime.parse(lastLoginAtStr),
+        isProfileComplete: isProfileComplete,
+      );
+
+      log('تم تحميل المستخدم محلياً - الملف مكتمل: ${user.isProfileComplete}');
+      return user;
     } catch (e) {
       log('خطأ في تحميل المستخدم محلياً: $e');
+      return null;
     }
-    return null;
   }
 
   // مسح المستخدم محلياً
   Future<void> _clearUserLocally() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('current_user');
+
+      // حذف جميع المفاتيح المتعلقة بالمستخدم
+      await prefs.remove('user_id');
+      await prefs.remove('user_email');
+      await prefs.remove('user_display_name');
+      await prefs.remove('user_photo_url');
+      await prefs.remove('user_custom_avatar_path');
+      await prefs.remove('user_created_at');
+      await prefs.remove('user_last_login_at');
+      await prefs.remove('user_is_profile_complete');
+
+      log('تم مسح بيانات المستخدم محلياً');
     } catch (e) {
       log('خطأ في مسح المستخدم محلياً: $e');
     }

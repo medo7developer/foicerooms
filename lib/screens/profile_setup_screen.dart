@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
+import 'dart:developer';
 import '../models/user_model.dart';
 import '../providers/user_providers/auth_provider.dart';
 
@@ -27,6 +28,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     // تعيين الاسم الحالي من Google
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
     _nameController.text = authProvider.playerName;
+    log('تم تهيئة شاشة إعداد الملف الشخصي: اسم المستخدم=${authProvider
+        .playerName}');
   }
 
   @override
@@ -304,8 +307,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
           _selectedImage = File(image.path);
           _selectedAvatar = null;
         });
+        log('تم اختيار صورة من المعرض');
       }
     } catch (e) {
+      log('خطأ في اختيار الصورة: $e');
       _showErrorSnackBar('خطأ في اختيار الصورة');
     }
   }
@@ -325,8 +330,10 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
           _selectedImage = File(image.path);
           _selectedAvatar = null;
         });
+        log('تم التقاط صورة من الكاميرا');
       }
     } catch (e) {
+      log('خطأ في التقاط الصورة: $e');
       _showErrorSnackBar('خطأ في التقاط الصورة');
     }
   }
@@ -335,74 +342,78 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
   void _showAvatarSelection() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => Container(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text(
-              'اختر أفاتار',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 20),
-            SizedBox(
-              height: 120,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: AvatarAssets.defaultAvatars.length,
-                itemBuilder: (context, index) {
-                  final avatar = AvatarAssets.defaultAvatars[index];
-                  return GestureDetector(
-                    onTap: () {
-                      setState(() {
-                        _selectedAvatar = avatar;
-                        _selectedAvatarIndex = index;
-                        _selectedImage = null;
-                      });
-                      Navigator.pop(context);
+      builder: (context) =>
+          Container(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'اختر أفاتار',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  height: 120,
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: AvatarAssets.defaultAvatars.length,
+                    itemBuilder: (context, index) {
+                      final avatar = AvatarAssets.defaultAvatars[index];
+                      return GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _selectedAvatar = avatar;
+                            _selectedAvatarIndex = index;
+                            _selectedImage = null;
+                          });
+                          log('تم اختيار أفاتار: $avatar');
+                          Navigator.pop(context);
+                        },
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 8),
+                          width: 80,
+                          height: 80,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: _selectedAvatarIndex == index
+                                  ? Colors.purple
+                                  : Colors.grey.shade300,
+                              width: 3,
+                            ),
+                          ),
+                          child: ClipOval(
+                            child: Image.asset(
+                              avatar,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) {
+                                return Container(
+                                  color: Colors.grey.shade300,
+                                  child: Icon(
+                                    Icons.person,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      );
                     },
-                    child: Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 8),
-                      width: 80,
-                      height: 80,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: _selectedAvatarIndex == index
-                              ? Colors.purple
-                              : Colors.grey.shade300,
-                          width: 3,
-                        ),
-                      ),
-                      child: ClipOval(
-                        child: Image.asset(
-                          avatar,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) {
-                            return Container(
-                              color: Colors.grey.shade300,
-                              child: Icon(
-                                Icons.person,
-                                color: Colors.grey.shade600,
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
     );
   }
 
   // حفظ الملف الشخصي
   Future<void> _saveProfile() async {
-    if (_nameController.text.trim().isEmpty) {
+    if (_nameController.text
+        .trim()
+        .isEmpty) {
       _showErrorSnackBar('يرجى إدخال اسم');
       return;
     }
@@ -410,6 +421,8 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
     setState(() => _isLoading = true);
 
     try {
+      log('بدء حفظ الملف الشخصي: ${_nameController.text.trim()}');
+
       final authProvider = Provider.of<AuthProvider>(context, listen: false);
 
       final success = await authProvider.updateUserProfile(
@@ -419,28 +432,75 @@ class _ProfileSetupScreenState extends State<ProfileSetupScreen> {
       );
 
       if (success) {
-        Navigator.pushReplacementNamed(context, '/home');
+        log('تم حفظ الملف الشخصي بنجاح');
+
+        // انتظار قصير للتأكد من تحديث البيانات
+        await Future.delayed(const Duration(milliseconds: 300));
+
+        // التحقق من حالة الملف الشخصي مرة أخرى
+        await authProvider.refreshUser();
+
+        log('حالة الملف الشخصي بعد الحفظ: ${authProvider.isProfileComplete}');
+
+        if (mounted) {
+          Navigator.pushReplacementNamed(context, '/home');
+        }
       } else {
         _showErrorSnackBar('فشل في حفظ الملف الشخصي');
+        log('فشل في حفظ الملف الشخصي');
       }
     } catch (e) {
+      log('خطأ في حفظ البيانات: $e');
       _showErrorSnackBar('خطأ في حفظ البيانات');
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
-  // تخطي إعداد الملف
-  void _skipSetup() {
-    Navigator.pushReplacementNamed(context, '/home');
+  // تخطي إعداد الملف - مع تحديث الحالة
+  Future<void> _skipSetup() async {
+    log('تم تخطي إعداد الملف الشخصي');
+
+    try {
+      final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+      // حفظ اسم افتراضي على الأقل إذا كان فارغاً
+      String displayName = _nameController.text.trim();
+      if (displayName.isEmpty) {
+        displayName = authProvider.playerName.isNotEmpty
+            ? authProvider.playerName
+            : 'لاعب ${DateTime
+            .now()
+            .millisecondsSinceEpoch
+            .toString()
+            .substring(8)}';
+      }
+
+      // تحديث مع الاسم على الأقل
+      await authProvider.updateUserProfile(displayName: displayName);
+
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/home');
+      }
+    } catch (e) {
+      log('خطأ في تخطي الإعداد: $e');
+      // في حالة الخطأ، انتقل للصفحة الرئيسية مباشرة
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/home');
+      }
+    }
   }
 
   void _showErrorSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red,
-      ),
-    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 }

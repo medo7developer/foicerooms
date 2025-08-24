@@ -1,4 +1,4 @@
-// lib/main.dart - نسخة مبسطة بدون Deep Links
+// lib/main.dart - نسخة محدثة مع حل مشكلة حالة الملف الشخصي
 
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -96,47 +96,57 @@ class VoiceRoomsApp extends StatelessWidget {
     return StreamBuilder<AuthState>(
       stream: Supabase.instance.client.auth.onAuthStateChange,
       builder: (context, snapshot) {
+        log('StreamBuilder - isLoading: ${authProvider.isLoading}, isAuthenticated: ${authProvider.isAuthenticated}, isProfileComplete: ${authProvider.isProfileComplete}');
+
         // عرض شاشة التحميل عند التهيئة
         if (authProvider.isLoading) {
-          return Scaffold(
-            body: Container(
-              decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF667eea), Color(0xFF764ba2), Color(0xFFf093fb)],
-                ),
-              ),
-              child: const Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    CircularProgressIndicator(color: Colors.white),
-                    SizedBox(height: 20),
-                    Text(
-                      'جاري التحقق من حالة تسجيل الدخول...',
-                      style: TextStyle(color: Colors.white, fontSize: 16),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
+          log('عرض شاشة التحميل');
+          return _buildLoadingScreen();
         }
 
         // إذا لم يكن مسجل دخول
         if (!authProvider.isAuthenticated) {
+          log('المستخدم غير مسجل - عرض شاشة تسجيل الدخول');
           return const LoginScreen();
         }
 
         // إذا كان مسجل دخول ولكن الملف الشخصي غير مكتمل
         if (!authProvider.isProfileComplete) {
+          log('المستخدم مسجل لكن الملف الشخصي غير مكتمل - عرض شاشة إعداد الملف الشخصي');
           return const ProfileSetupScreen();
         }
 
         // إذا كان كل شيء مكتمل
+        log('كل شيء مكتمل - عرض الصفحة الرئيسية');
         return const HomeScreen();
       },
+    );
+  }
+
+  Widget _buildLoadingScreen() {
+    return Scaffold(
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF667eea), Color(0xFF764ba2), Color(0xFFf093fb)],
+          ),
+        ),
+        child: const Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(color: Colors.white),
+              SizedBox(height: 20),
+              Text(
+                'جاري التحقق من حالة تسجيل الدخول...',
+                style: TextStyle(color: Colors.white, fontSize: 16),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

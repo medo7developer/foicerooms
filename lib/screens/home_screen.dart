@@ -71,9 +71,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     setState(() {});
   }
 
+// تعديلات مطلوبة في lib/screens/home_screen.dart
+
+// استبدل دالة _onCreateRoom بهذه النسخة:
   Future<void> _onCreateRoom() async {
-    if (_service.nameController.text.trim().isEmpty) {
-      _service.showSnackBar(context, 'يرجى إدخال اسمك أولاً', isError: true);
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    // التحقق من تسجيل الدخول
+    if (!authProvider.isAuthenticated) {
+      _service.showSnackBar(context, 'يجب تسجيل الدخول أولاً', isError: true);
+      return;
+    }
+
+    // الحصول على اسم اللاعب من بيانات المصادقة
+    final playerName = authProvider.playerName;
+
+    if (playerName.isEmpty) {
+      _service.showSnackBar(context, 'خطأ في الحصول على اسم اللاعب', isError: true);
       return;
     }
 
@@ -87,14 +101,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       return;
     }
 
-    await _service.savePlayerName(_service.nameController.text.trim());
-
     final result = await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => CreateRoomScreen(
           playerId: _service.playerId!,
-          playerName: _service.nameController.text.trim(),
+          playerName: playerName, // استخدام اسم من AuthProvider
         ),
       ),
     );
@@ -106,6 +118,40 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       await _service.loadAvailableRooms(context, showLoading: false);
       setState(() {});
     }
+  }
+
+// استبدل دالة _showOnlineUsers بهذه النسخة:
+  void _showOnlineUsers() {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    if (!authProvider.isAuthenticated || authProvider.playerName.isEmpty) {
+      _service.showSnackBar(context, 'يجب تسجيل الدخول أولاً', isError: true);
+      return;
+    }
+
+    if (_service.playerId == null) {
+      _service.showSnackBar(context, 'خطأ في معرف اللاعب', isError: true);
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => OnlineUsersScreen(
+          currentPlayerId: _service.playerId!,
+          currentPlayerName: authProvider.playerName, // استخدام اسم من AuthProvider
+          currentRoomId: _service.currentUserStatus?.roomId,
+          currentRoomName: _service.currentUserStatus?.roomName,
+        ),
+      ),
+    ).then((result) {
+      // تحديث البيانات عند العودة
+      if (result == true) {
+        _service.checkUserStatus(context);
+        _service.loadAvailableRooms(context, showLoading: false);
+        setState(() {});
+      }
+    });
   }
 
   Future<void> _joinRoom(GameRoom room) async {
@@ -152,32 +198,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       currentUserStatus: _service.currentUserStatus,
       playerId: _service.playerId,
     );
-  }
-
-  void _showOnlineUsers() {
-    if (_service.playerId == null || _service.nameController.text.trim().isEmpty) {
-      _service.showSnackBar(context, 'يرجى إدخال اسمك أولاً', isError: true);
-      return;
-    }
-
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (context) => OnlineUsersScreen(
-          currentPlayerId: _service.playerId!,
-          currentPlayerName: _service.nameController.text.trim(),
-          currentRoomId: _service.currentUserStatus?.roomId,
-          currentRoomName: _service.currentUserStatus?.roomName,
-        ),
-      ),
-    ).then((result) {
-      // تحديث البيانات عند العودة
-      if (result == true) {
-        _service.checkUserStatus(context);
-        _service.loadAvailableRooms(context, showLoading: false);
-        setState(() {});
-      }
-    });
   }
 
   void _onStatsPressed() {

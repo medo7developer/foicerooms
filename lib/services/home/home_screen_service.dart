@@ -25,12 +25,22 @@ class HomeScreenService {
   bool isRefreshing = false;
   final OnlineUsersService onlineUsersService = OnlineUsersService();
 
-  // تهيئة التطبيق
+// تعديلات مطلوبة في lib/services/home/home_screen_service.dart
+
+// استبدل دالة initializeApp بهذه النسخة المحدثة:
   Future<void> initializeApp(BuildContext context) async {
     final authProvider = Provider.of<AuthProvider>(context, listen: false);
 
     // استخدام بيانات المستخدم المصادق عليه
     playerId = authProvider.playerId;
+
+    // تحديث اسم اللاعب من بيانات المصادقة
+    if (authProvider.playerName.isNotEmpty) {
+      nameController.text = authProvider.playerName;
+      savedPlayerName = authProvider.playerName;
+      // حفظ الاسم محلياً أيضاً
+      await savePlayerName(authProvider.playerName);
+    }
 
     if (playerId != null && authProvider.playerName.isNotEmpty) {
       // تحديث الخدمات لاستخدام البيانات الجديدة
@@ -51,6 +61,141 @@ class HomeScreenService {
 
     await checkUserStatus(context);
     await loadAvailableRooms(context);
+  }
+
+// إضافة دالة جديدة للحصول على اسم اللاعب الصحيح:
+  String getPlayerName(BuildContext context) {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    // إعطاء أولوية لبيانات المصادقة
+    if (authProvider.isAuthenticated && authProvider.playerName.isNotEmpty) {
+      return authProvider.playerName;
+    }
+
+    // الرجوع للاسم المحفوظ أو المدخل يدوياً
+    return nameController.text.trim();
+  }
+
+// تحديث دالة joinRoom لاستخدام الاسم الصحيح:
+  Future<bool> joinRoom(BuildContext context, GameRoom room) async {
+    final authProvider = Provider.of<AuthProvider>(context, listen: false);
+
+    if (!authProvider.isAuthenticated) {
+      showSnackBar(context, 'يجب تسجيل الدخول أولاً', isError: true);
+      return false;
+    }
+
+    // الحصول على الاسم الصحيح
+    final playerName = getPlayerName(context);
+
+    // التحقق من صحة البيانات
+    if (playerName.isEmpty) {
+      showSnackBar(context, 'خطأ في الحصول على اسم اللاعب', isError: true);
+      return false;
+    }
+
+    if (playerId == null) {
+      showSnackBar(context, 'خطأ في معرف اللاعب، يرجى إعادة تشغيل التطبيق', isError: true);
+      return false;
+    }
+
+    // التحقق من حالة المستخدم الحالية
+    if (currentUserStatus?.inRoom == true) {
+      showSnackBar(context, 'يجب مغادرة الغرفة الحالية أولاً', isError: true);
+      return false;
+    }
+
+    try {
+      final gameProvider = context.read<GameProvider>();
+      final supabaseService = context.read<SupabaseService>();
+
+      // محاولة الانضمام في الخادم أولاً
+      final result = await supabaseService.joinRoom(
+        room.id,
+        playerId!,
+        playerName, // استخدام الاسم الصحيح
+      );
+
+      if (result.success) {
+        // باقي الكود كما هو...
+        await Future.delayed(const Duration(milliseconds: 500));
+
+        await onlineUsersService.updateUserStatus(
+          playerId!,
+          playerName,
+          true,
+          roomId: room.id,
+          roomName: room.name,
+        );
+
+        final updatedRoom = await supabaseService.getRoomById(room.id);
+
+        if (updatedRoom != null) {
+          final success = gameProvider.joinRoom(updatedRoom.id, playerId!, playerName);
+
+          if (success) {
+            currentUserStatus = UserStatus(
+              inRoom: true,
+              roomId: updatedRoom.id,
+              roomName: updatedRoom.name,
+              isOwner: false,
+              roomState: 'waiting',
+            );
+
+            await loadAvailableRooms(context, showLoading: false);
+            return true;
+          } else {
+            showSnackBar(context, 'انضممت للغرفة في الخادم، جاري تحديث البيانات...', isError: false);
+            await checkUserStatus(context);
+            await loadAvailableRooms(context, showLoading: false);
+            return false;
+          }
+        } else {
+          showSnackBar(context, 'انضممت للغرفة، جاري تحديث البيانات...', isError: false);
+          await checkUserStatus(context);
+          await loadAvailableRooms(context, showLoading: false);
+          return false;
+        }
+      } else {
+        showSnackBar(context, result.reason, isError: true);
+
+        if (result.existingRoomId != null) {
+          await checkUserStatus(context);
+        }
+
+        return false;
+      }
+    } catch (e) {
+      log('خطأ في الانضمام للغرفة: $e');
+      showSnackBar(context, 'خطأ في الاتصال، يرجى المحاولة مرة أخرى', isError: true);
+      return false;
+    }
+  }
+
+// تحديث دالة leaveCurrentRoom:
+  Future<void> leaveCurrentRoom(BuildContext context) async {
+    if (playerId == null) return;
+
+    try {
+      final supabaseService = context.read<SupabaseService>();
+      await supabaseService.leaveRoom(playerId!);
+
+      final playerName = getPlayerName(context);
+      await onlineUsersService.updateUserStatus(
+        playerId!,
+        playerName,
+        true,
+      );
+
+      currentUserStatus = UserStatus.free;
+      showSnackBar(context, 'تم مغادرة الغرفة');
+
+      await Future.delayed(const Duration(milliseconds: 300));
+      await loadAvailableRooms(context, showLoading: false);
+    } catch (e) {
+      log('خطأ في مغادرة الغرفة: $e');
+      showSnackBar(context, 'فشل في مغادرة الغرفة', isError: true);
+    }
   }
 
   // بدء التحديث التلقائي
@@ -173,135 +318,6 @@ class HomeScreenService {
       }
     } finally {
       isRefreshing = false;
-    }
-  }
-
-// تعديل دالة joinRoom لإرجاع قيمة منطقية
-  Future<bool> joinRoom(BuildContext context, GameRoom room) async {
-    final authProvider = Provider.of<AuthProvider>(context, listen: false);
-
-    if (!authProvider.isAuthenticated) {
-      showSnackBar(context, 'يجب تسجيل الدخول أولاً', isError: true);
-      return false;
-    }
-
-    // التحقق من صحة البيانات
-    if (nameController.text.trim().isEmpty) {
-      showSnackBar(context, 'يرجى إدخال اسمك أولاً', isError: true);
-      return false;
-    }
-
-    if (playerId == null) {
-      showSnackBar(context, 'خطأ في معرف اللاعب، يرجى إعادة تشغيل التطبيق', isError: true);
-      return false;
-    }
-
-    // التحقق من حالة المستخدم الحالية
-    if (currentUserStatus?.inRoom == true) {
-      showSnackBar(context, 'يجب مغادرة الغرفة الحالية أولاً', isError: true);
-      return false;
-    }
-
-    await savePlayerName(nameController.text.trim());
-
-    try {
-      final gameProvider = context.read<GameProvider>();
-      final supabaseService = context.read<SupabaseService>();
-
-      // محاولة الانضمام في الخادم أولاً
-      final result = await supabaseService.joinRoom(
-        room.id,
-        playerId!,
-        nameController.text.trim(),
-      );
-
-      if (result.success) {
-        // انتظار قصير للتأكد من تحديث قاعدة البيانات
-        await Future.delayed(const Duration(milliseconds: 500));
-
-        // تحديث حالة المستخدم عند الانضمام
-        await onlineUsersService.updateUserStatus(
-          playerId!,
-          nameController.text.trim(),
-          true,
-          roomId: room.id,
-          roomName: room.name,
-        );
-
-        // جلب بيانات الغرفة المحدثة من الخادم
-        final updatedRoom = await supabaseService.getRoomById(room.id);
-
-        if (updatedRoom != null) {
-          // محاولة الانضمام في GameProvider بالبيانات المحدثة
-          final success = gameProvider.joinRoom(updatedRoom.id, playerId!, nameController.text.trim());
-
-          if (success) {
-            // تحديث حالة المستخدم فوراً
-            currentUserStatus = UserStatus(
-              inRoom: true,
-              roomId: updatedRoom.id,
-              roomName: updatedRoom.name,
-              isOwner: false,
-              roomState: 'waiting',
-            );
-
-            // تحديث قوائم الغرف فوراً
-            await loadAvailableRooms(context, showLoading: false);
-
-            return true; // نجح الانضمام
-          } else {
-            showSnackBar(context, 'انضممت للغرفة في الخادم، جاري تحديث البيانات...', isError: false);
-            // تحديث فوري للبيانات
-            await checkUserStatus(context);
-            await loadAvailableRooms(context, showLoading: false);
-            return false;
-          }
-        } else {
-          showSnackBar(context, 'انضممت للغرفة، جاري تحديث البيانات...', isError: false);
-          await checkUserStatus(context);
-          await loadAvailableRooms(context, showLoading: false);
-          return false;
-        }
-      } else {
-        showSnackBar(context, result.reason, isError: true);
-
-        // إذا كان المستخدم في غرفة أخرى، تحديث الحالة
-        if (result.existingRoomId != null) {
-          await checkUserStatus(context);
-        }
-
-        return false;
-      }
-    } catch (e) {
-      log('خطأ في الانضمام للغرفة: $e');
-      showSnackBar(context, 'خطأ في الاتصال، يرجى المحاولة مرة أخرى', isError: true);
-      return false;
-    }
-  }
-
-  // مغادرة الغرفة الحالية
-  Future<void> leaveCurrentRoom(BuildContext context) async {
-    if (playerId == null) return;
-
-    try {
-      final supabaseService = context.read<SupabaseService>();
-      await supabaseService.leaveRoom(playerId!);
-
-      // تحديث حالة المستخدم عند المغادرة
-      await onlineUsersService.updateUserStatus(
-        playerId!,
-        nameController.text.trim(),
-        true, // متصل لكن ليس في غرفة
-      );
-
-      currentUserStatus = UserStatus.free;
-      showSnackBar(context, 'تم مغادرة الغرفة');
-
-      await Future.delayed(const Duration(milliseconds: 300));
-      await loadAvailableRooms(context, showLoading: false);
-    } catch (e) {
-      log('خطأ في مغادرة الغرفة: $e');
-      showSnackBar(context, 'فشل في مغادرة الغرفة', isError: true);
     }
   }
 

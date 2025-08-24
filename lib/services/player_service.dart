@@ -1,6 +1,5 @@
 import 'dart:developer';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import '../providers/game_provider.dart';
 import 'room_service.dart';
 
 /// خدمة إدارة اللاعبين - انضمام، مغادرة، حالة اللاعبين
