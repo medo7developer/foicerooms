@@ -86,9 +86,23 @@ class _GameScreenState extends State<GameScreen>
       }
 
       // 2. تهيئة الصوت المحلي
+      // 2. تهيئة الصوت المحلي مع التحقق المحسن
       await _webrtcService.initializeLocalAudio();
-      await Future.delayed(const Duration(milliseconds: 1200));
-      log('✅ تم تهيئة الصوت المحلي');
+      await Future.delayed(const Duration(milliseconds: 800));
+
+      // التحقق من نجاح التهيئة
+      if (_webrtcService.localStream == null) {
+        log('❌ فشل في تهيئة الصوت المحلي، محاولة ثانية');
+        await _webrtcService.initializeLocalAudio();
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+
+      final localTracks = _webrtcService.localStream?.getAudioTracks().length ?? 0;
+      if (localTracks == 0) {
+        throw Exception('فشل في الحصول على مسارات صوتية محلية');
+      }
+
+      log('✅ تم تهيئة الصوت المحلي - عدد المسارات: $localTracks');
 
       if (!mounted) return;
 
@@ -162,8 +176,17 @@ class _GameScreenState extends State<GameScreen>
       setState(() => _isConnecting = false);
 
       // 11. بدء المؤقتات والمراقبة
+      // 11. بدء المؤقتات والمراقبة
       _startTimers();
       _webrtcService.startConnectionHealthCheck();
+
+      // 12. تشخيص شامل نهائي للتأكد من عمل الصوت
+      Future.delayed(const Duration(seconds: 5), () async {
+        if (mounted) {
+          log('🔍 === تشخيص نهائي للصوت ===');
+          await _webrtcService.performComprehensiveDiagnosis();
+        }
+      });
 
       log('🎉 === انتهت تهيئة اللعبة بنجاح ===');
 

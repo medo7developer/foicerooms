@@ -44,19 +44,20 @@ class WebRTCConnectionManager {
       ) async {
     try {
       // إعدادات محسنة مع TURN servers إضافية
+      // إعدادات محسنة للإصدارات الحديثة من flutter_webrtc 1.1.0+
       final Map<String, dynamic> configuration = {
         'iceServers': [
           {'urls': 'stun:stun.l.google.com:19302'},
           {'urls': 'stun:stun1.l.google.com:19302'},
           {'urls': 'stun:stun2.l.google.com:19302'},
-          // إضافة TURN servers مجانية
+          {'urls': 'stun:stun.cloudflare.com:3478'}, // إضافة Cloudflare STUN
+          // إضافة TURN servers مجانية محدثة
           {
-            'urls': 'turn:openrelay.metered.ca:80',
-            'username': 'openrelayproject',
-            'credential': 'openrelayproject',
-          },
-          {
-            'urls': 'turn:openrelay.metered.ca:443',
+            'urls': [
+              'turn:openrelay.metered.ca:80',
+              'turn:openrelay.metered.ca:443',
+              'turns:openrelay.metered.ca:443'
+            ],
             'username': 'openrelayproject',
             'credential': 'openrelayproject',
           },
@@ -65,7 +66,12 @@ class WebRTCConnectionManager {
         'iceCandidatePoolSize': 10,
         'bundlePolicy': 'max-bundle',
         'rtcpMuxPolicy': 'require',
-        'iceTransportPolicy': 'all', // السماح بجميع أنواع الاتصال
+        'iceTransportPolicy': 'all',
+        // إضافة إعدادات جديدة للإصدارات الحديثة
+        'enableDtlsSrtp': true,
+        'enableRtpDataChannel': false,
+        'enableDscp': true,
+        'enableImplicitRollback': true,
       };
 
       log('🔧 إنشاء peer connection لـ $peerId مع إعدادات محسنة');
@@ -397,6 +403,7 @@ class WebRTCConnectionManager {
     };
 
     // معالجة المسارات البعيدة مع تفعيل فوري
+    // معالجة المسارات البعيدة محسنة للإصدارات الحديثة
     pc.onTrack = (RTCTrackEvent event) {
       log('🎵 تم استقبال مسار من $peerId - النوع: ${event.track.kind}');
 
@@ -404,18 +411,38 @@ class WebRTCConnectionManager {
         final remoteStream = event.streams.first;
         remoteStreams[peerId] = remoteStream;
 
-        // تفعيل المسار فوراً
+        // تفعيل المسار فوراً مع معالجة محسنة
         event.track.enabled = true;
 
-        // إعداد معالجات أحداث المسار
-        event.track.onEnded = () => log('🔇 انتهى المسار الصوتي من $peerId');
-        event.track.onMute = () => log('🔇 تم كتم المسار من $peerId');
-        event.track.onUnMute = () => log('🔊 تم إلغاء كتم المسار من $peerId');
+        // إعداد معالجات أحداث المسار محسنة
+        event.track.onEnded = () {
+          log('🔇 انتهى المسار الصوتي من $peerId');
+          // إعادة محاولة الاتصال عند انتهاء المسار
+          Future.delayed(const Duration(seconds: 2), () {
+            _retryConnection(peerId);
+          });
+        };
+
+        event.track.onMute = () {
+          log('🔇 تم كتم المسار من $peerId');
+        };
+
+        event.track.onUnMute = () {
+          log('🔊 تم إلغاء كتم المسار من $peerId');
+        };
 
         log('✅ تم تسجيل مسار صوتي بعيد من $peerId');
 
-        // تأكيد تفعيل الصوت بعدة محاولات
+        // تأكيد تفعيل الصوت مع إعدادات محسنة
         _ensureAudioEnabled(peerId, event.track);
+
+        // إضافة معالجة خاصة للمتصفحات الحديثة
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (event.track.enabled != true) {
+            event.track.enabled = true;
+            log('🔧 إعادة تفعيل المسار البعيد من $peerId');
+          }
+        });
       }
     };
 

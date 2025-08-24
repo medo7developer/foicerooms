@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:developer';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:voice_rooms_app/services/webrtc_services/webrtc_audio_diagnostics.dart';
 import 'package:voice_rooms_app/services/webrtc_services/webrtc_audio_manager.dart';
 import 'package:voice_rooms_app/services/webrtc_services/webrtc_connection_manager.dart';
 import 'package:voice_rooms_app/services/webrtc_services/webrtc_diagnostics.dart';
@@ -21,6 +22,7 @@ class WebRTCService {
   // إضافة متغيرات للتحكم في التسلسل
   final Map<String, bool> _connectionInProgress = {};
   final Map<String, DateTime> _lastConnectionAttempt = {};
+  late final WebRTCAudioDiagnostics _audioDiagnostics;
 
   bool get hasCallbacks => _signalingCallbacks.hasAllCallbacks;
 
@@ -46,6 +48,12 @@ class WebRTCService {
     );
 
     _signalingCallbacks = WebRTCSignalingCallbacks();
+
+    _audioDiagnostics = WebRTCAudioDiagnostics(
+      peers: _peers,
+      remoteStreams: _remoteStreams,
+      getLocalStream: () => _localStream,
+    );
   }
 
   // Getters
@@ -90,16 +98,26 @@ class WebRTCService {
   Future<void> refreshAudioConnections() => _audioManager.refreshAudioConnections();
 
   // Signaling callbacks
+  // Signaling callbacks - محسن للإصدارات الحديثة
   void setSignalingCallbacks({
     Function(String, RTCIceCandidate)? onIceCandidate,
     Function(String, RTCSessionDescription)? onOffer,
     Function(String, RTCSessionDescription)? onAnswer,
   }) {
+    log('🔧 تسجيل WebRTC callbacks');
     _signalingCallbacks.setCallbacks(
       onIceCandidate: onIceCandidate,
       onOffer: onOffer,
       onAnswer: onAnswer,
     );
+
+    // التحقق من نجاح التسجيل
+    final hasCallbacks = _signalingCallbacks.hasAllCallbacks;
+    log('✅ حالة تسجيل callbacks: $hasCallbacks');
+
+    if (!hasCallbacks) {
+      log('❌ فشل في تسجيل بعض callbacks');
+    }
   }
 
   // إضافة دالة للتحقق من صحة الاتصال

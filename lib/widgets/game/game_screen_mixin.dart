@@ -36,27 +36,47 @@ mixin GameScreenMixin {
     // مسح الإشارات المعالجة السابقة
     _processedSignals.clear();
 
+    // تسجيل callbacks محسن مع معالجة أخطاء أفضل
     webrtcService.setSignalingCallbacks(
-      onIceCandidate: (peerId, candidate) async {
-        await _handleOutgoingSignal('ice-candidate', peerId, {
-          'candidate': candidate.candidate,
-          'sdpMid': candidate.sdpMid,
-          'sdpMLineIndex': candidate.sdpMLineIndex,
-        }, supabaseService, playerId, gameContext);
+      onIceCandidate: (peerId, candidate) {
+        // التحقق من صحة البيانات قبل الإرسال
+        if (candidate.candidate != null && candidate.candidate!.isNotEmpty) {
+          _handleOutgoingSignal('ice-candidate', peerId, {
+            'candidate': candidate.candidate,
+            'sdpMid': candidate.sdpMid,
+            'sdpMLineIndex': candidate.sdpMLineIndex,
+          }, supabaseService, playerId, gameContext).catchError((e) {
+            log('❌ خطأ في إرسال ICE candidate إلى $peerId: $e');
+          });
+        } else {
+          log('⚠️ تجاهل ICE candidate فارغ لـ $peerId');
+        }
       },
 
-      onOffer: (peerId, offer) async {
-        await _handleOutgoingSignal('offer', peerId, {
-          'sdp': offer.sdp,
-          'type': offer.type,
-        }, supabaseService, playerId, gameContext);
+      onOffer: (peerId, offer) {
+        if (offer.sdp != null && offer.sdp!.isNotEmpty) {
+          _handleOutgoingSignal('offer', peerId, {
+            'sdp': offer.sdp,
+            'type': offer.type,
+          }, supabaseService, playerId, gameContext).catchError((e) {
+            log('❌ خطأ في إرسال offer إلى $peerId: $e');
+          });
+        } else {
+          log('⚠️ تجاهل offer فارغ لـ $peerId');
+        }
       },
 
-      onAnswer: (peerId, answer) async {
-        await _handleOutgoingSignal('answer', peerId, {
-          'sdp': answer.sdp,
-          'type': answer.type,
-        }, supabaseService, playerId, gameContext);
+      onAnswer: (peerId, answer) {
+        if (answer.sdp != null && answer.sdp!.isNotEmpty) {
+          _handleOutgoingSignal('answer', peerId, {
+            'sdp': answer.sdp,
+            'type': answer.type,
+          }, supabaseService, playerId, gameContext).catchError((e) {
+            log('❌ خطأ في إرسال answer إلى $peerId: $e');
+          });
+        } else {
+          log('⚠️ تجاهل answer فارغ لـ $peerId');
+        }
       },
     );
 

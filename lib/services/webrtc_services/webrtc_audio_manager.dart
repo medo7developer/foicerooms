@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -27,53 +28,117 @@ class WebRTCAudioManager {
   }
 
   // تهيئة الصوت المحلي
+  // تهيئة الصوت المحلي - محسن للإصدارات الحديثة
   Future<void> initializeLocalAudio() async {
     try {
       if (!await requestPermissions()) {
         throw Exception('صلاحيات الميكروفون غير متاحة');
       }
 
+      // إعدادات صوتية محسنة للإصدارات الحديثة
       final Map<String, dynamic> mediaConstraints = {
         'audio': {
-          'echoCancellation': true,
-          'noiseSuppression': true,
-          'autoGainControl': true,
+          'mandatory': {
+            'echoCancellation': true,
+            'googEchoCancellation': true,
+            'noiseSuppression': true,
+            'googNoiseSuppression': true,
+            'autoGainControl': true,
+            'googAutoGainControl': true,
+            'googHighpassFilter': true,
+            'googTypingNoiseDetection': true,
+            'googAudioMirroring': false,
+          },
+          'optional': [
+            {'googDAEchoCancellation': true},
+            {'googNoiseSuppression2': true},
+            {'googAutoGainControl2': true},
+          ]
         },
         'video': false,
       };
 
+      log('🎤 بدء تهيئة الصوت المحلي...');
       final stream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+
+      // التحقق من وجود مسارات صوتية
+      final audioTracks = stream.getAudioTracks();
+      if (audioTracks.isEmpty) {
+        throw Exception('لم يتم الحصول على مسارات صوتية');
+      }
+
+      // تفعيل جميع المسارات الصوتية
+      for (final track in audioTracks) {
+        track.enabled = true;
+        log('✅ تم تفعيل المسار الصوتي: ${track.id}');
+      }
+
       setLocalStream(stream);
-      log('تم تهيئة الصوت المحلي بنجاح');
+      log('✅ تم تهيئة الصوت المحلي بنجاح - عدد المسارات: ${audioTracks.length}');
     } catch (e) {
-      log('خطأ في تهيئة الصوت المحلي: $e');
+      log('❌ خطأ في تهيئة الصوت المحلي: $e');
       rethrow;
     }
   }
 
   // تبديل حالة الميكروفون
+  // تبديل حالة الميكروفون - محسن للإصدارات الحديثة
   Future<void> toggleMicrophone() async {
     final localStream = getLocalStream();
     if (localStream != null) {
       final audioTracks = localStream.getAudioTracks();
       if (audioTracks.isNotEmpty) {
         final track = audioTracks.first;
-        track.enabled = !track.enabled;
-        log('الميكروفون ${track.enabled ? 'مفعل' : 'مكتوم'}');
+        final newState = !track.enabled;
+        track.enabled = newState;
+        log('🎤 الميكروفون ${newState ? 'مفعل' : 'مكتوم'}');
 
-        // إشعار جميع الـ peers بحالة المسار الجديدة
+        // إشعار جميع الـ peers بحالة المسار الجديدة مع معالجة محسنة
+        final updateFutures = <Future>[];
+
         for (final entry in peers.entries) {
+          final peerId = entry.key;
           final pc = entry.value;
-          final List senders = await pc.getSenders();
-          for (final sender in senders) {
-            if (sender.track?.kind == 'audio') {
-              // إعادة إرسال المسار المحدث
-              sender.replaceTrack(track);
-              log('تم تحديث مسار الصوت للـ peer ${entry.key}');
-            }
-          }
+
+          updateFutures.add(_updatePeerTrack(pc, peerId, track, newState));
+        }
+
+        // انتظار تحديث جميع الـ peers
+        try {
+          await Future.wait(updateFutures, eagerError: false);
+          log('✅ تم تحديث حالة الميكروفون لجميع الـ peers');
+        } catch (e) {
+          log('⚠️ خطأ في تحديث بعض الـ peers: $e');
         }
       }
+    } else {
+      log('⚠️ لا يوجد مجرى صوتي محلي لتبديل الميكروفون');
+      // محاولة إعادة تهيئة الصوت
+      await initializeLocalAudio();
+    }
+  }
+
+  // دالة مساعدة لتحديث مسار peer محدد
+  Future<void> _updatePeerTrack(RTCPeerConnection pc, String peerId, MediaStreamTrack track, bool enabled) async {
+    try {
+      final senders = await pc.getSenders();
+      for (final sender in senders) {
+        if (sender.track?.kind == 'audio') {
+          // استخدام replaceTrack مع معالجة أخطاء محسنة
+          await sender.replaceTrack(track).timeout(
+            const Duration(seconds: 3),
+            onTimeout: () {
+              log('⏰ timeout في تحديث مسار $peerId');
+              throw TimeoutException('timeout في تحديث المسار');
+            },
+          );
+
+          log('✅ تم تحديث مسار الصوت للـ peer $peerId (${enabled ? 'مفعل' : 'مكتوم'})');
+          break;
+        }
+      }
+    } catch (e) {
+      log('❌ فشل في تحديث مسار الصوت للـ peer $peerId: $e');
     }
   }
 
