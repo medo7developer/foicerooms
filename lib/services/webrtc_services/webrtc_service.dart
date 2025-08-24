@@ -73,12 +73,70 @@ class WebRTCService {
   void enableRemoteAudio() => _audioManager.enableRemoteAudio();
   void checkAudioTracks() => _audioManager.checkAudioTracks();
 
-  Future<void> connectToAllPeers(List<String> peerIds, String myId) {
-    return _connectionManager.connectToAllPeers(peerIds, myId);
+  Future<void> connectToAllPeers(List<String> peerIds, String myId) async {
+    await _connectionManager.connectToAllPeers(peerIds, myId);
+    // بدء مراقبة الاتصالات بعد إنشائها
+    startConnectionMonitoring();
   }
 
   Future<void> addIceCandidate(String peerId, RTCIceCandidate candidate) {
     return _connectionManager.addIceCandidate(peerId, candidate);
+  }
+
+  // إضافة دالة تشخيص مشاكل ICE
+  Future<void> diagnoseAndFixIceIssues(String peerId) {
+    return _connectionManager.diagnoseAndFixIceIssues(peerId);
+  }
+
+  // مراقب دوري لحالة الاتصالات
+  Timer? _connectionMonitor;
+
+  // بدء مراقبة الاتصالات
+  void startConnectionMonitoring() {
+    _connectionMonitor?.cancel();
+    _connectionMonitor = Timer.periodic(const Duration(seconds: 10), (timer) {
+      _monitorConnections();
+    });
+    log('🔍 بدء مراقبة الاتصالات الدورية');
+  }
+
+  // إيقاف مراقبة الاتصالات
+  void stopConnectionMonitoring() {
+    _connectionMonitor?.cancel();
+    _connectionMonitor = null;
+    log('🛑 إيقاف مراقبة الاتصالات');
+  }
+
+  // مراقبة حالة الاتصالات
+  Future<void> _monitorConnections() async {
+    final peersToCheck = List<String>.from(_peers.keys);
+    
+    for (final peerId in peersToCheck) {
+      try {
+        final pc = _peers[peerId];
+        if (pc == null) continue;
+
+        final iceState = await pc.getIceConnectionState();
+        final connectionState = await pc.getConnectionState();
+
+        // إصلاح الاتصالات المتعثرة
+        if (iceState == RTCIceConnectionState.RTCIceConnectionStateFailed ||
+            connectionState == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+          log('⚠️ اكتشاف مشكلة في الاتصال مع $peerId، بدء الإصلاح');
+          await diagnoseAndFixIceIssues(peerId);
+        }
+        
+        // معالجة الاتصالات التي تأخذ وقتاً طويلاً في الفحص
+        else if (iceState == RTCIceConnectionState.RTCIceConnectionStateChecking) {
+          log('⏰ اتصال $peerId في حالة فحص طويلة، محاولة تسريع');
+          // إعادة تشغيل ICE لتسريع العملية
+          await pc.restartIce();
+        }
+
+      } catch (e) {
+        log('❌ خطأ في مراقبة الاتصال مع $peerId: $e');
+      }
+    }
   }
 
   Future<void> closePeerConnection(String peerId) {
@@ -293,6 +351,9 @@ class WebRTCService {
   Future<void> dispose() async {
     try {
       log('🧹 بدء تنظيف موارد WebRTC');
+
+      // إيقاف مراقبة الاتصالات
+      stopConnectionMonitoring();
 
       // مسح حالات التتبع
       _connectionInProgress.clear();

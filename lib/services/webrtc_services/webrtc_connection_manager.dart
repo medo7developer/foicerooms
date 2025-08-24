@@ -43,35 +43,55 @@ class WebRTCConnectionManager {
       WebRTCSignalingCallbacks signalingCallbacks,
       ) async {
     try {
-      // إعدادات محسنة مع TURN servers إضافية
-      // إعدادات محسنة للإصدارات الحديثة من flutter_webrtc 1.1.0+
+      // إعدادات محسنة مع TURN servers موثوقة وحديثة
       final Map<String, dynamic> configuration = {
         'iceServers': [
+          // STUN servers متعددة للتنوع
           {'urls': 'stun:stun.l.google.com:19302'},
-          {'urls': 'stun:stun1.l.google.com:19302'},
+          {'urls': 'stun:stun1.l.google.com:19302'}, 
           {'urls': 'stun:stun2.l.google.com:19302'},
-          {'urls': 'stun:stun.cloudflare.com:3478'}, // إضافة Cloudflare STUN
-          // إضافة TURN servers مجانية محدثة
+          {'urls': 'stun:stun.cloudflare.com:3478'},
+          
+          // TURN servers موثوقة ومحدثة (2024)
+          {
+            'urls': [
+              'turn:relay.metered.ca:80',
+              'turn:relay.metered.ca:443', 
+              'turns:relay.metered.ca:443'
+            ],
+            'username': 'dd7ce87b5d39a6ba6043b5b6',
+            'credential': 'nMH0i5wRzpJfrMny',
+          },
+          {
+            'urls': [
+              'turn:global.relay.metered.ca:80',
+              'turn:global.relay.metered.ca:443',
+              'turns:global.relay.metered.ca:443'
+            ],
+            'username': 'dd7ce87b5d39a6ba6043b5b6', 
+            'credential': 'nMH0i5wRzpJfrMny',
+          },
+          // Backup TURN server
           {
             'urls': [
               'turn:openrelay.metered.ca:80',
-              'turn:openrelay.metered.ca:443',
-              'turns:openrelay.metered.ca:443'
+              'turn:openrelay.metered.ca:443'
             ],
             'username': 'openrelayproject',
             'credential': 'openrelayproject',
           },
         ],
         'sdpSemantics': 'unified-plan',
-        'iceCandidatePoolSize': 10,
+        'iceCandidatePoolSize': 15, // زيادة pool size
         'bundlePolicy': 'max-bundle',
-        'rtcpMuxPolicy': 'require',
+        'rtcpMuxPolicy': 'require', 
         'iceTransportPolicy': 'all',
-        // إضافة إعدادات جديدة للإصدارات الحديثة
+        // إعدادات محسنة للاتصال
         'enableDtlsSrtp': true,
         'enableRtpDataChannel': false,
-        'enableDscp': true,
-        'enableImplicitRollback': true,
+        'continualGatheringPolicy': 'gather_continually', // إضافة مهمة
+        'iceConnectionReceivingTimeout': 30000, // 30 ثانية timeout
+        'iceBackupCandidatePairPingInterval': 2000, // فحص backup candidates
       };
 
       log('🔧 إنشاء peer connection لـ $peerId مع إعدادات محسنة');
@@ -289,7 +309,7 @@ class WebRTCConnectionManager {
     }
   }
 
-// تحسين دالة addIceCandidate
+// دالة محسنة لإضافة ICE candidate مع معالجة أفضل للتوقيت
   Future<void> addIceCandidate(String peerId, RTCIceCandidate candidate) async {
     try {
       final pc = peers[peerId];
@@ -301,35 +321,58 @@ class WebRTCConnectionManager {
 
       // التحقق من حالة الـ signaling
       final signalingState = await pc.getSignalingState();
-
-      // التحقق من وجود remote description
       final remoteDesc = await pc.getRemoteDescription();
-      if (remoteDesc == null) {
-        log('⚠️ لا يوجد remote description لـ $peerId (حالة: $signalingState)، تأجيل ICE candidate');
+      
+      // شروط محسنة لإضافة ICE candidate
+      final canAddCandidate = remoteDesc != null && 
+          (signalingState == RTCSignalingState.RTCSignalingStateStable ||
+           signalingState == RTCSignalingState.RTCSignalingStateHaveRemoteOffer ||
+           signalingState == RTCSignalingState.RTCSignalingStateHaveLocalOffer);
+
+      if (!canAddCandidate) {
+        log('⚠️ لا يمكن إضافة ICE candidate الآن لـ $peerId (حالة: $signalingState، remoteDesc: ${remoteDesc != null})، تأجيل');
         _addPendingCandidate(peerId, candidate);
+        
+        // محاولة معالجة بعد تأخير
+        Future.delayed(const Duration(milliseconds: 1000), () {
+          _processPendingCandidates(peerId);
+        });
         return;
       }
 
-      // التحقق من أن الحالة مناسبة لإضافة candidates
-      if (signalingState == RTCSignalingState.RTCSignalingStateHaveLocalOffer ||
-          signalingState == RTCSignalingState.RTCSignalingStateHaveRemoteOffer) {
-        log('⚠️ حالة signaling غير مستقرة ($signalingState)، تأجيل ICE candidate لـ $peerId');
-        _addPendingCandidate(peerId, candidate);
-        return;
-      }
-
-      // إضافة الـ candidate إذا كانت الحالة مناسبة
-      await pc.addCandidate(candidate);
+      // إضافة candidate مع retry في حالة الفشل
+      await _addCandidateWithRetry(pc, candidate, peerId);
       log('✅ تم إضافة ICE candidate لـ $peerId (حالة: $signalingState)');
 
     } catch (e) {
       log('❌ خطأ في إضافة ICE candidate لـ $peerId: $e');
-      // تأجيل الـ candidate للمعالجة لاحقاً في حالة الخطأ
       _addPendingCandidate(peerId, candidate);
     }
   }
 
-// تحسين معالجة الـ candidates المؤجلة
+  // دالة مساعدة لإضافة candidate مع إعادة محاولة
+  Future<void> _addCandidateWithRetry(RTCPeerConnection pc, RTCIceCandidate candidate, String peerId) async {
+    int retries = 0;
+    const maxRetries = 3;
+    
+    while (retries < maxRetries) {
+      try {
+        await pc.addCandidate(candidate).timeout(const Duration(seconds: 5));
+        return; // نجح
+      } catch (e) {
+        retries++;
+        if (retries >= maxRetries) {
+          log('❌ فشل إضافة ICE candidate لـ $peerId بعد $maxRetries محاولات: $e');
+          rethrow;
+        }
+        
+        log('⚠️ فشل إضافة ICE candidate لـ $peerId (محاولة $retries/$maxRetries): $e');
+        await Future.delayed(Duration(milliseconds: 200 * retries)); // تأخير متدرج
+      }
+    }
+  }
+
+// معالجة محسنة للـ candidates المؤجلة مع إدارة أفضل للتوقيت
   Future<void> _processPendingCandidates(String peerId) async {
     final candidates = pendingCandidates[peerId];
     if (candidates == null || candidates.isEmpty) return;
@@ -340,47 +383,74 @@ class WebRTCConnectionManager {
       return;
     }
 
-    // التحقق من الحالة
-    final signalingState = await pc.getSignalingState();
-    final remoteDesc = await pc.getRemoteDescription();
+    try {
+      // التحقق من الحالة
+      final signalingState = await pc.getSignalingState();
+      final remoteDesc = await pc.getRemoteDescription();
+      final iceState = await pc.getIceConnectionState();
 
-    if (remoteDesc == null) {
-      log('⚠️ لا يزال لا يوجد remote description لـ $peerId، الانتظار...');
-      return;
-    }
+      // شروط محسنة للمعالجة
+      final canProcess = remoteDesc != null &&
+          (signalingState == RTCSignalingState.RTCSignalingStateStable ||
+           signalingState == RTCSignalingState.RTCSignalingStateHaveRemoteOffer) &&
+          (iceState != RTCIceConnectionState.RTCIceConnectionStateClosed &&
+           iceState != RTCIceConnectionState.RTCIceConnectionStateFailed);
 
-    if (signalingState != RTCSignalingState.RTCSignalingStateStable) {
-      log('⚠️ حالة signaling غير مستقرة ($signalingState) لـ $peerId، الانتظار...');
-
-      // إعادة جدولة المعالجة
-      Future.delayed(const Duration(seconds: 1), () {
-        _processPendingCandidates(peerId);
-      });
-      return;
-    }
-
-    log('📋 معالجة ${candidates.length} ICE candidates مؤجلة لـ $peerId في حالة مستقرة');
-
-    int successCount = 0;
-    for (int i = 0; i < candidates.length; i++) {
-      try {
-        await pc.addCandidate(candidates[i]);
-        successCount++;
-        log('✅ تم إضافة candidate مؤجل ${i + 1}/${candidates.length} لـ $peerId');
-
-        // تأخير صغير بين الـ candidates
-        if (i < candidates.length - 1) {
-          await Future.delayed(const Duration(milliseconds: 100));
+      if (!canProcess) {
+        log('⚠️ الشروط غير مناسبة لمعالجة candidates المؤجلة لـ $peerId');
+        log('   SignalingState: $signalingState, RemoteDesc: ${remoteDesc != null}, IceState: $iceState');
+        
+        // إعادة جدولة إذا كانت الحالة قابلة للإصلاح
+        if (iceState != RTCIceConnectionState.RTCIceConnectionStateClosed) {
+          Future.delayed(const Duration(milliseconds: 1500), () {
+            _processPendingCandidates(peerId);
+          });
         }
-
-      } catch (e) {
-        log('❌ فشل في إضافة candidate مؤجل ${i + 1} لـ $peerId: $e');
+        return;
       }
-    }
 
-    // مسح الـ candidates المعالجة
-    pendingCandidates.remove(peerId);
-    log('🗑️ تم مسح الـ candidates المؤجلة لـ $peerId (نجح: $successCount/${candidates.length})');
+      log('📋 معالجة ${candidates.length} ICE candidates مؤجلة لـ $peerId');
+
+      int successCount = 0;
+      final candidatesToRemove = <RTCIceCandidate>[];
+
+      // معالجة المجموعات (batch processing)
+      const batchSize = 3;
+      for (int i = 0; i < candidates.length; i += batchSize) {
+        final batch = candidates.skip(i).take(batchSize).toList();
+        
+        await Future.wait(
+          batch.map((candidate) async {
+            try {
+              await pc.addCandidate(candidate).timeout(const Duration(seconds: 3));
+              successCount++;
+              candidatesToRemove.add(candidate);
+              log('✅ تم إضافة candidate مؤجل ${successCount} لـ $peerId');
+            } catch (e) {
+              log('❌ فشل في إضافة candidate مؤجل لـ $peerId: $e');
+            }
+          }),
+        );
+
+        // تأخير صغير بين المجموعات
+        if (i + batchSize < candidates.length) {
+          await Future.delayed(const Duration(milliseconds: 200));
+        }
+      }
+
+      // إزالة candidates المعالجة بنجاح
+      candidates.removeWhere((c) => candidatesToRemove.contains(c));
+      
+      if (candidates.isEmpty) {
+        pendingCandidates.remove(peerId);
+        log('🗑️ تم مسح جميع candidates المؤجلة لـ $peerId (نجح: $successCount)');
+      } else {
+        log('📋 باقي ${candidates.length} candidates مؤجلة لـ $peerId (نجح: $successCount)');
+      }
+
+    } catch (e) {
+      log('❌ خطأ في معالجة candidates المؤجلة لـ $peerId: $e');
+    }
   }
 
 // تحسين إعداد معالجات الأحداث
@@ -389,16 +459,27 @@ class WebRTCConnectionManager {
       String peerId,
       WebRTCSignalingCallbacks signalingCallbacks,
       ) {
-    // معالجة ICE candidates مع تصفية
+    // معالجة ICE candidates محسنة مع تصفية وتوقيت أفضل
     pc.onIceCandidate = (RTCIceCandidate candidate) {
+      // تحسين فلترة ICE candidates
       if (candidate.candidate != null &&
           candidate.candidate!.isNotEmpty &&
-          !candidate.candidate!.contains('0.0.0.0')) {
-
-        log('🧊 ICE candidate صالح للـ peer $peerId');
+          !candidate.candidate!.contains('0.0.0.0') &&
+          !candidate.candidate!.contains('candidate:')) {
+        
+        // تأجيل الإرسال قليلاً لتجميع candidates
+        Future.delayed(const Duration(milliseconds: 100), () {
+          log('🧊 إرسال ICE candidate للـ peer $peerId');
+          signalingCallbacks.onIceCandidateGenerated?.call(peerId, candidate);
+        });
+      } else if (candidate.candidate != null && 
+                 candidate.candidate!.isNotEmpty &&
+                 candidate.candidate!.contains('candidate:')) {
+        // إرسال ICE candidate عادي فوراً
+        log('🧊 ICE candidate عادي للـ peer $peerId');
         signalingCallbacks.onIceCandidateGenerated?.call(peerId, candidate);
       } else {
-        log('⚠️ تم تجاهل ICE candidate غير صالح لـ $peerId');
+        log('⚠️ تم تجاهل ICE candidate غير صالح لـ $peerId: ${candidate.candidate}');
       }
     };
 
@@ -471,7 +552,7 @@ class WebRTCConnectionManager {
       }
     };
 
-    // معالجة ICE connection state
+    // معالجة ICE connection state محسنة مع إعادة محاولة ذكية
     pc.onIceConnectionState = (RTCIceConnectionState state) {
       log('🧊 حالة ICE مع $peerId: $state');
 
@@ -480,16 +561,28 @@ class WebRTCConnectionManager {
         case RTCIceConnectionState.RTCIceConnectionStateCompleted:
           log('🎉 تم تأسيس اتصال ICE مع $peerId');
           // معالجة candidates مؤجلة عند الاتصال
-          Future.delayed(const Duration(milliseconds: 500), () {
+          Future.delayed(const Duration(milliseconds: 300), () {
             _processPendingCandidates(peerId);
           });
           break;
         case RTCIceConnectionState.RTCIceConnectionStateFailed:
-          log('❌ فشل ICE connection مع $peerId');
-          _onIceFailed(peerId);
+          log('❌ فشل ICE connection مع $peerId - محاولة إصلاح');
+          _handleIceFailureWithRetry(peerId, pc);
           break;
         case RTCIceConnectionState.RTCIceConnectionStateDisconnected:
-          log('⚠️ انقطع ICE connection مع $peerId');
+          log('⚠️ انقطع ICE connection مع $peerId - إعادة محاولة');
+          _handleIceDisconnection(peerId, pc);
+          break;
+        case RTCIceConnectionState.RTCIceConnectionStateChecking:
+          log('🔍 فحص ICE candidates مع $peerId');
+          // إضافة timeout للفحص
+          Future.delayed(const Duration(seconds: 15), () async {
+            final currentState = await pc.getIceConnectionState();
+            if (currentState == RTCIceConnectionState.RTCIceConnectionStateChecking) {
+              log('⏰ انتهت مهلة فحص ICE لـ $peerId - إعادة تشغيل');
+              await pc.restartIce();
+            }
+          });
           break;
         default:
           break;
@@ -506,6 +599,26 @@ class WebRTCConnectionManager {
         Future.delayed(const Duration(milliseconds: 300), () {
           _processPendingCandidates(peerId);
         });
+      }
+    };
+
+    // إضافة معالج ICE gathering state لتحسين عملية جمع candidates
+    pc.onIceGatheringState = (RTCIceGatheringState state) {
+      log('🧊 حالة جمع ICE candidates مع $peerId: $state');
+      
+      switch (state) {
+        case RTCIceGatheringState.RTCIceGatheringStateGathering:
+          log('🔍 بدء جمع ICE candidates لـ $peerId');
+          break;
+        case RTCIceGatheringState.RTCIceGatheringStateComplete:
+          log('✅ انتهاء جمع ICE candidates لـ $peerId');
+          // معالجة أي candidates مؤجلة بعد انتهاء الجمع
+          Future.delayed(const Duration(milliseconds: 500), () {
+            _processPendingCandidates(peerId);
+          });
+          break;
+        default:
+          break;
       }
     };
   }
@@ -545,6 +658,47 @@ class WebRTCConnectionManager {
     });
   }
 
+  // معالج فشل ICE محسن مع إعادة محاولة ذكية
+  Future<void> _handleIceFailureWithRetry(String peerId, RTCPeerConnection pc) async {
+    log('🛠️ معالجة فشل ICE لـ $peerId');
+    
+    try {
+      // محاولة إعادة تشغيل ICE أولاً
+      await pc.restartIce();
+      log('🔄 تم إعادة تشغيل ICE لـ $peerId');
+      
+      // انتظار 3 ثوان لمعرفة النتيجة
+      await Future.delayed(const Duration(seconds: 3));
+      
+      final currentState = await pc.getIceConnectionState();
+      if (currentState == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+        log('❌ فشل إعادة تشغيل ICE، إعادة إنشاء الاتصال لـ $peerId');
+        await _retryConnection(peerId);
+      }
+    } catch (e) {
+      log('❌ خطأ في معالجة فشل ICE لـ $peerId: $e');
+      await _retryConnection(peerId);
+    }
+  }
+
+  // معالج انقطاع ICE
+  Future<void> _handleIceDisconnection(String peerId, RTCPeerConnection pc) async {
+    log('🔌 معالجة انقطاع ICE لـ $peerId');
+    
+    // انتظار قصير لمعرفة إذا كان مؤقتاً
+    await Future.delayed(const Duration(seconds: 2));
+    
+    try {
+      final currentState = await pc.getIceConnectionState();
+      if (currentState == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+        log('🔄 لا يزال منقطع، محاولة إعادة الاتصال لـ $peerId');
+        await pc.restartIce();
+      }
+    } catch (e) {
+      log('❌ خطأ في معالجة انقطاع ICE لـ $peerId: $e');
+    }
+  }
+
   // إغلاق اتصال peer محدد
   Future<void> closePeerConnection(String peerId) async {
     try {
@@ -561,17 +715,35 @@ class WebRTCConnectionManager {
     }
   }
 
-  // إضافة candidate مؤجل
+  // إضافة candidate مؤجل مع إدارة محسنة
   void _addPendingCandidate(String peerId, RTCIceCandidate candidate) {
     pendingCandidates[peerId] ??= [];
-    pendingCandidates[peerId]!.add(candidate);
-
-    log('📋 تم تأجيل ICE candidate لـ $peerId (المجموع: ${pendingCandidates[peerId]!.length})');
-
-    // محاولة المعالجة بعد تأخير
-    Future.delayed(const Duration(milliseconds: 2000), () {
-      _processPendingCandidates(peerId);
-    });
+    
+    // تجنب إضافة candidates مكررة
+    final existingCandidate = pendingCandidates[peerId]!.any(
+      (c) => c.candidate == candidate.candidate && 
+             c.sdpMid == candidate.sdpMid && 
+             c.sdpMLineIndex == candidate.sdpMLineIndex
+    );
+    
+    if (!existingCandidate) {
+      pendingCandidates[peerId]!.add(candidate);
+      log('📋 تم تأجيل ICE candidate لـ $peerId (المجموع: ${pendingCandidates[peerId]!.length})');
+      
+      // محاولة المعالجة بعد تأخير متدرج
+      final delayMs = pendingCandidates[peerId]!.length <= 3 ? 1000 : 2000;
+      Future.delayed(Duration(milliseconds: delayMs), () {
+        _processPendingCandidates(peerId);
+      });
+    } else {
+      log('⚠️ تجاهل ICE candidate مكرر لـ $peerId');
+    }
+    
+    // تنظيف الـ candidates القديمة جداً (أكثر من 20)
+    if (pendingCandidates[peerId]!.length > 20) {
+      pendingCandidates[peerId]!.removeRange(0, 10);
+      log('🧹 تنظيف candidates قديمة لـ $peerId');
+    }
   }
 
   // إعادة محاولة الاتصال
@@ -591,6 +763,85 @@ class WebRTCConnectionManager {
       log('✅ تمت إعادة محاولة الاتصال مع $peerId');
     } catch (e) {
       log('❌ فشل في إعادة محاولة الاتصال مع $peerId: $e');
+    }
+  }
+
+  // دالة للتحقق من صحة ICE candidate
+  bool _isValidIceCandidate(RTCIceCandidate candidate) {
+    if (candidate.candidate == null || candidate.candidate!.isEmpty) {
+      return false;
+    }
+    
+    final candidateStr = candidate.candidate!;
+    
+    // تجاهل candidates غير صالحة
+    if (candidateStr.contains('0.0.0.0') ||
+        candidateStr.contains('169.254.') || // Link-local addresses
+        candidateStr.contains('127.0.0.1')) { // Localhost
+      return false;
+    }
+    
+    // التأكد من وجود معلومات أساسية
+    if (!candidateStr.contains('candidate:') ||
+        candidate.sdpMid == null ||
+        candidate.sdpMLineIndex == null) {
+      return false;
+    }
+    
+    return true;
+  }
+
+  // دالة شاملة للتشخيص وحل مشاكل ICE
+  Future<void> diagnoseAndFixIceIssues(String peerId) async {
+    log('🔍 بدء تشخيص مشاكل ICE لـ $peerId');
+    
+    try {
+      final pc = peers[peerId];
+      if (pc == null) {
+        log('❌ لا يوجد peer connection لـ $peerId');
+        return;
+      }
+
+      // فحص الحالات
+      final connectionState = await pc.getConnectionState();
+      final iceState = await pc.getIceConnectionState();
+      final signalingState = await pc.getSignalingState();
+      final remoteDesc = await pc.getRemoteDescription();
+      final localDesc = await pc.getLocalDescription();
+
+      log('📊 حالة التشخيص لـ $peerId:');
+      log('   Connection: $connectionState');
+      log('   ICE: $iceState');
+      log('   Signaling: $signalingState');
+      log('   Remote Desc: ${remoteDesc != null}');
+      log('   Local Desc: ${localDesc != null}');
+
+      // تطبيق الإصلاحات حسب المشكلة
+      if (iceState == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+        log('🔧 إصلاح فشل ICE لـ $peerId');
+        await pc.restartIce();
+        
+      } else if (iceState == RTCIceConnectionState.RTCIceConnectionStateDisconnected) {
+        log('🔧 إصلاح انقطاع ICE لـ $peerId');
+        await pc.restartIce();
+        
+      } else if (iceState == RTCIceConnectionState.RTCIceConnectionStateChecking) {
+        log('⏰ ICE في حالة فحص طويلة لـ $peerId، معالجة candidates مؤجلة');
+        await _processPendingCandidates(peerId);
+        
+      } else if (connectionState == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        log('🔄 إعادة إنشاء الاتصال الكامل لـ $peerId');
+        await _retryConnection(peerId);
+      }
+
+      // فحص نهائي بعد المعالجة
+      Future.delayed(const Duration(seconds: 3), () async {
+        final finalState = await pc.getIceConnectionState();
+        log('🏁 الحالة النهائية بعد التشخيص لـ $peerId: $finalState');
+      });
+
+    } catch (e) {
+      log('❌ خطأ في تشخيص مشاكل ICE لـ $peerId: $e');
     }
   }
 }
